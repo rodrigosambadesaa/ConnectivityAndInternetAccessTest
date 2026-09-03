@@ -9,6 +9,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,8 +38,11 @@ class MainActivity : ComponentActivity() {
         var networkState by remember { mutableStateOf<ConnectivityAndInternetAccess.NetworkState?>(null) }
         var activeResult by remember { mutableStateOf<ConnectivityAndInternetAccess.InternetResult?>(null) }
         var strictResult by remember { mutableStateOf<ConnectivityAndInternetAccess.InternetResult?>(null) }
+        var icmpResult by remember { mutableStateOf<ConnectivityAndInternetAccess.IcmpResult?>(null) }
+
         var isCheckingActive by remember { mutableStateOf(false) }
         var isCheckingStrict by remember { mutableStateOf(false) }
+        var isCheckingIcmp by remember { mutableStateOf(false) }
         var isAttemptingConnection by remember { mutableStateOf(false) }
 
         DisposableEffect(Unit) {
@@ -149,7 +154,45 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Section 4: Connection Attempt Tracking
+                // Section 4: ICMP Reachability Check
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("ICMP Reachability (Ping)", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                isCheckingIcmp = true
+                                ConnectivityAndInternetAccess.checkIcmpReachabilityAsyncDefault { result ->
+                                    icmpResult = result
+                                    isCheckingIcmp = false
+                                }
+                            },
+                            enabled = !isCheckingIcmp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (isCheckingIcmp) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text("Run ICMP Check")
+                        }
+                        icmpResult?.let { result ->
+                            Spacer(modifier = Modifier.height(8.dp))
+                            StatusRow("Reachable (ICMP)", result.isReachable, if (result.isReachable) Color.Green else Color.Red)
+                            Text("Reached: ${result.reachedAddress ?: "None"}")
+                            Text("Elapsed: ${result.elapsedMilliseconds}ms")
+                            Text("Attempted: ${result.attemptedAddresses.joinToString(", ")}", fontSize = 12.sp)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Nota: Un fallo en ICMP no significa que no haya Internet, muchas redes bloquean los pings.", fontSize = 12.sp, color = Color.Gray)
+                        }
+                    }
+                }
+
+                // Section 5: Connection Attempt Tracking
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Connection Attempt Tracking", fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -175,7 +218,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Section 5: Specific Transports
+                // Section 6: Specific Transports
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Transports", fontWeight = FontWeight.Bold, fontSize = 18.sp)

@@ -74,6 +74,16 @@ public final class ConnectivityAndInternetAccess {
         void onResult(InternetResult result);
     }
 
+    /**
+     * Receives the result of the optional ICMP diagnostic.
+     *
+     * <p>ICMP is deliberately independent from the normal DNS/HTTP reachability
+     * result. A failed ICMP probe does not mean that Internet access is unavailable.
+     */
+    public interface IcmpCallback {
+        void onResult(IcmpResult result);
+    }
+
     public static final class InternetResult {
         private final boolean reachable;
         private final String reachedHost;
@@ -94,6 +104,36 @@ public final class ConnectivityAndInternetAccess {
         public boolean isReachable() { return reachable; }
         public String getReachedHost() { return reachedHost; }
         public List<String> getAttemptedHosts() { return attemptedHosts; }
+        public long getElapsedMilliseconds() { return elapsedMilliseconds; }
+    }
+
+    /**
+     * Result of the optional ICMP diagnostic.
+     *
+     * <p>This result must not be used as the authoritative Internet-availability
+     * signal. Networks commonly allow DNS/HTTPS while filtering ICMP.
+     */
+    public static final class IcmpResult {
+        private final boolean reachable;
+        private final String reachedAddress;
+        private final List<String> attemptedAddresses;
+        private final long elapsedMilliseconds;
+
+        private IcmpResult(
+                boolean reachable,
+                String reachedAddress,
+                List<String> attemptedAddresses,
+                long elapsedMilliseconds) {
+            this.reachable = reachable;
+            this.reachedAddress = reachedAddress;
+            this.attemptedAddresses = Collections.unmodifiableList(
+                    new ArrayList<>(attemptedAddresses));
+            this.elapsedMilliseconds = elapsedMilliseconds;
+        }
+
+        public boolean isReachable() { return reachable; }
+        public String getReachedAddress() { return reachedAddress; }
+        public List<String> getAttemptedAddresses() { return attemptedAddresses; }
         public long getElapsedMilliseconds() { return elapsedMilliseconds; }
     }
 
@@ -202,7 +242,6 @@ public final class ConnectivityAndInternetAccess {
             this.callback = callback;
             this.latestState = snapshotNetworkState(this.applicationContext);
 
-            // Deliver a useful initial value immediately through the same main-thread path.
             deliver(this.latestState);
             register();
         }
@@ -218,9 +257,6 @@ public final class ConnectivityAndInternetAccess {
 
                     @Override
                     public void onAvailable(Network network) {
-                        // Do not synchronously query NetworkCapabilities here. Android's
-                        // documentation warns that this is race-prone; wait for
-                        // onCapabilitiesChanged().
                         currentDefaultNetwork = network;
                     }
 
@@ -308,6 +344,10 @@ public final class ConnectivityAndInternetAccess {
     private static final long DNS_STAGE_TIMEOUT_MS = 700L;
     private static final long TOTAL_PROBE_TIMEOUT_MS = 2_000L;
     private static final int MAX_PARALLEL_PROBES = 9;
+    private static final long ICMP_ATTEMPT_TIMEOUT_MS = 800L;
+    private static final long ICMP_TOTAL_TIMEOUT_MS = 1_500L;
+    private static final long ICMP_POLL_INTERVAL_MS = 25L;
+    private static final String PING_BINARY = "/system/bin/ping";
     private static final int DNS_PORT = 53;
     private static final long CONNECTION_ATTEMPT_TIMEOUT_MS = 30_000L;
     private static final String DNS_QUERY_NAME = "example.com";
@@ -327,6 +367,16 @@ public final class ConnectivityAndInternetAccess {
             "https://www.amazon.com/"
     ));
 
+    /**
+     * Numeric addresses are intentional: the built-in ICMP diagnostic should not
+     * require forward DNS before it can test basic IP/ICMP reachability.
+     */
+    private static final List<String> DEFAULT_ICMP_TARGETS =
+            Collections.unmodifiableList(Arrays.asList(
+                    "1.1.1.1",
+                    "8.8.8.8"
+            ));
+
     private static volatile List<String> globalHosts = DEFAULT_HOSTS;
     private static volatile List<String> globalResolvers = DEFAULT_DNS_RESOLVERS;
     private static volatile DnsProbeStrategy globalDnsStrategy = new DefaultDnsProbe();
@@ -335,6 +385,8 @@ public final class ConnectivityAndInternetAccess {
     private static final Object CONNECTION_ATTEMPT_LOCK = new Object();
     private static final Deque<ConnectionAttempt> CONNECTION_ATTEMPT_QUEUE = new ArrayDeque<>();
     private static final AtomicInteger CONNECTION_ATTEMPTS = new AtomicInteger(0);
+    private static final AtomicBoolean CONNECTION_ATTEMPT_STALLED = new AtomicBoolean(false);
+    private static long legacyConnectingSinceElapsedRealtime = -1L;
     private static final AtomicInteger DNS_TRANSACTION_ID = new AtomicInteger((int) System.nanoTime());
     private static final AtomicInteger PROBE_THREAD_NUMBER = new AtomicInteger(0);
 
@@ -356,6 +408,7 @@ public final class ConnectivityAndInternetAccess {
     private final List<String> instanceResolvers;
     private final DnsProbeStrategy instanceDnsStrategy;
     private final HttpProbeStrategy instanceHttpStrategy;
+    private final List<String> instanceIcmpTargets;
 
     /**
      * Legacy constructor retained for compatibility. It also updates the global host list,
@@ -366,6 +419,7 @@ public final class ConnectivityAndInternetAccess {
         this.instanceResolvers = DEFAULT_DNS_RESOLVERS;
         this.instanceDnsStrategy = new DefaultDnsProbe();
         this.instanceHttpStrategy = new DefaultHttpProbe();
+        this.instanceIcmpTargets = DEFAULT_ICMP_TARGETS;
         globalHosts = this.instanceHosts;
     }
 
@@ -378,11 +432,13 @@ public final class ConnectivityAndInternetAccess {
         this.instanceHttpStrategy = builder.httpStrategy != null
                 ? builder.httpStrategy
                 : new DefaultHttpProbe();
+        this.instanceIcmpTargets = normalizeIcmpTargets(builder.icmpTargets);
     }
 
     public static final class Builder {
         private List<String> hosts = DEFAULT_HOSTS;
         private List<String> dnsResolvers = DEFAULT_DNS_RESOLVERS;
+        private List<String> icmpTargets = DEFAULT_ICMP_TARGETS;
         private DnsProbeStrategy dnsStrategy;
         private HttpProbeStrategy httpStrategy;
 
@@ -393,6 +449,17 @@ public final class ConnectivityAndInternetAccess {
 
         public Builder setDnsResolvers(List<String> resolvers) {
             this.dnsResolvers = resolvers;
+            return this;
+        }
+
+        /**
+         * Configures targets used only by the explicit ICMP diagnostic.
+         *
+         * <p>The default targets are 1.1.1.1 and 8.8.8.8. They are tried
+         * sequentially, never as part of the normal DNS/HTTP reachability check.
+         */
+        public Builder setIcmpTargets(List<String> targets) {
+            this.icmpTargets = targets;
             return this;
         }
 
@@ -419,8 +486,6 @@ public final class ConnectivityAndInternetAccess {
                 .setHttpProbeStrategy(new StrictHttpProbe());
     }
 
-    // Instance API: preferred for new code.
-
     public Request checkInternetAsync(Context context, InternetCallback callback) {
         return executeAsync(
                 context,
@@ -440,7 +505,25 @@ public final class ConnectivityAndInternetAccess {
                 instanceHttpStrategy);
     }
 
-    // Connectivity API.
+    /**
+     * Runs an optional ICMP diagnostic off the caller thread.
+     *
+     * <p>This does not participate in {@link #checkInternetAsync(Context, InternetCallback)}
+     * and a false result must not be interpreted as "offline". The spawned ping
+     * process follows the OS routing decision and cannot be bound to a specific
+     * Android {@link Network} like the DNS/HTTP probes can.
+     */
+    public Request checkIcmpReachabilityAsync(IcmpCallback callback) {
+        return executeIcmpAsync(instanceIcmpTargets, callback);
+    }
+
+    /**
+     * Blocking counterpart of {@link #checkIcmpReachabilityAsync(IcmpCallback)}.
+     * Do not call this from the main thread.
+     */
+    public IcmpResult checkIcmpReachabilityBlocking() {
+        return executeIcmpBlocking(instanceIcmpTargets);
+    }
 
     public static boolean isActiveNetworkConnected(Context context) {
         return isConnected(context);
@@ -465,29 +548,81 @@ public final class ConnectivityAndInternetAccess {
         }
 
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            for (NetworkInfo info : legacyNetworks(manager(context))) {
-                if (info != null
-                        && info.isAvailable()
-                        && info.getState() == NetworkInfo.State.CONNECTING) {
-                    return true;
-                }
+            boolean legacyConnecting = isLegacyConnecting(manager(context));
+            updateLegacyConnectingStallState(legacyConnecting);
+            if (legacyConnecting) {
+                return true;
             }
         }
 
+        expireTimedOutConnectionAttempts();
         return CONNECTION_ATTEMPTS.get() > 0;
+    }
+
+    /**
+     * Returns whether a connection attempt has remained unresolved for at least
+     * {@link #CONNECTION_ATTEMPT_TIMEOUT_MS}.
+     *
+     * <p>On API 29+ this is based on attempts registered through
+     * {@link #beginConnectionAttempt(Context)}. On API 16-28 the legacy
+     * {@link NetworkInfo.State#CONNECTING} signal is also timed from the first
+     * observation made by this helper or {@link #isConnecting(Context)}.
+     *
+     * <p>An explicit-attempt timeout remains observable until a successful
+     * connection, a new attempt cycle, or {@link #clearConnectionAttemptStall()}.
+     */
+    public static boolean isConnectionAttemptStalled(Context context) {
+        requireContext(context);
+
+        if (isConnected(context)) {
+            return false;
+        }
+
+        expireTimedOutConnectionAttempts();
+        if (CONNECTION_ATTEMPT_STALLED.get()) {
+            return true;
+        }
+
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            return updateLegacyConnectingStallState(
+                    isLegacyConnecting(manager(context)));
+        }
+
+        return false;
+    }
+
+    /** Clears a previously observed connection-attempt stall/timeout. */
+    public static void clearConnectionAttemptStall() {
+        synchronized (CONNECTION_ATTEMPT_LOCK) {
+            CONNECTION_ATTEMPT_STALLED.set(false);
+            legacyConnectingSinceElapsedRealtime = -1L;
+        }
     }
 
     public static void beginConnectionAttempt(Context context) {
         requireContext(context);
-        final ConnectionAttempt attempt = new ConnectionAttempt();
+        Context applicationContext = context.getApplicationContext();
+        final Context safeContext = applicationContext != null ? applicationContext : context;
+        final ConnectionAttempt attempt;
 
         synchronized (CONNECTION_ATTEMPT_LOCK) {
+            if (CONNECTION_ATTEMPTS.get() == 0) {
+                CONNECTION_ATTEMPT_STALLED.set(false);
+                legacyConnectingSinceElapsedRealtime = -1L;
+            }
+            // Timestamp at enqueue time so queue order and timeout order cannot diverge
+            // even when several callers begin attempts concurrently.
+            attempt = new ConnectionAttempt(SystemClock.elapsedRealtime());
             CONNECTION_ATTEMPT_QUEUE.addLast(attempt);
             CONNECTION_ATTEMPTS.incrementAndGet();
         }
 
         MAIN_HANDLER.postDelayed(
-                () -> closeConnectionAttempt(attempt),
+                () -> {
+                    if (!isConnected(safeContext)) {
+                        timeoutConnectionAttempt(attempt);
+                    }
+                },
                 CONNECTION_ATTEMPT_TIMEOUT_MS);
     }
 
@@ -521,6 +656,7 @@ public final class ConnectivityAndInternetAccess {
             }
         }
 
+        expireTimedOutConnectionAttempts();
         return CONNECTION_ATTEMPTS.get() > 0;
     }
 
@@ -569,8 +705,6 @@ public final class ConnectivityAndInternetAccess {
                     connectivityManager.getNetworkCapabilities(active));
         }
 
-        // Before API 23 there is no default-Network object and no VALIDATED or
-        // CAPTIVE_PORTAL capability. activeNetworkInfo represents the legacy default.
         boolean connected = isConnectedLegacy(connectivityManager.getActiveNetworkInfo());
         return new NetworkState(
                 connected,
@@ -606,9 +740,7 @@ public final class ConnectivityAndInternetAccess {
         return active != null && isInternetValidated(context, active);
     }
 
-    /**
-     * Network-specific variant of {@link #isInternetValidated(Context)}.
-     */
+    /** Network-specific variant of {@link #isInternetValidated(Context)}. */
     public static boolean isInternetValidated(Context context, Network network) {
         requireContext(context);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || network == null) {
@@ -638,9 +770,7 @@ public final class ConnectivityAndInternetAccess {
         return active != null && isCaptivePortalDetected(context, active);
     }
 
-    /**
-     * Network-specific variant of {@link #isCaptivePortalDetected(Context)}.
-     */
+    /** Network-specific variant of {@link #isCaptivePortalDetected(Context)}. */
     public static boolean isCaptivePortalDetected(Context context, Network network) {
         requireContext(context);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || network == null) {
@@ -651,7 +781,7 @@ public final class ConnectivityAndInternetAccess {
                 manager(context).getNetworkCapabilities(network);
         return capabilities != null
                 && capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+                NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
     }
 
     public static boolean isConnectedWifi(Context context) {
@@ -773,7 +903,7 @@ public final class ConnectivityAndInternetAccess {
         return false;
     }
 
-    // Static compatibility helpers. Names differ from the presidential methods so
+    // Static compatibility helpers. Names differ from the instance methods so
     // Java and Kotlin/JVM do not generate duplicate method signatures.
 
     public static boolean isInternetReachable(Context context) {
@@ -865,12 +995,154 @@ public final class ConnectivityAndInternetAccess {
                 globalHttpStrategy);
     }
 
+    public static Request checkIcmpReachabilityAsyncDefault(IcmpCallback callback) {
+        return executeIcmpAsync(DEFAULT_ICMP_TARGETS, callback);
+    }
+
+    public static IcmpResult checkIcmpReachabilityBlockingDefault() {
+        return executeIcmpBlocking(DEFAULT_ICMP_TARGETS);
+    }
+
     public static List<String> defaultHosts() {
         return DEFAULT_HOSTS;
     }
 
     public static List<String> defaultDnsResolvers() {
         return DEFAULT_DNS_RESOLVERS;
+    }
+
+    public static List<String> defaultIcmpTargets() {
+        return DEFAULT_ICMP_TARGETS;
+    }
+
+    private static Request executeIcmpAsync(
+            List<String> targets,
+            IcmpCallback callback) {
+        if (callback == null) {
+            throw new IllegalArgumentException("callback == null");
+        }
+
+        final List<String> normalizedTargets = normalizeIcmpTargets(targets);
+        final Request request = new Request();
+
+        Future<?> future = EXECUTOR.submit(() -> {
+            IcmpResult result = executeIcmpBlocking(normalizedTargets);
+
+            if (!request.isCancelled()) {
+                MAIN_HANDLER.post(() -> {
+                    if (!request.isCancelled()) {
+                        callback.onResult(result);
+                    }
+                });
+            }
+        });
+
+        request.attach(future);
+        return request;
+    }
+
+    private static IcmpResult executeIcmpBlocking(List<String> targets) {
+        long started = SystemClock.elapsedRealtime();
+        long deadline = started + ICMP_TOTAL_TIMEOUT_MS;
+        List<String> attempted = new ArrayList<>();
+
+        for (String target : normalizeIcmpTargets(targets)) {
+            if (Thread.currentThread().isInterrupted()
+                    || SystemClock.elapsedRealtime() >= deadline) {
+                break;
+            }
+
+            attempted.add(target);
+            long attemptDeadline = Math.min(
+                    deadline,
+                    SystemClock.elapsedRealtime() + ICMP_ATTEMPT_TIMEOUT_MS);
+
+            if (checkIcmpTarget(target, attemptDeadline)) {
+                return new IcmpResult(
+                        true,
+                        target,
+                        attempted,
+                        SystemClock.elapsedRealtime() - started);
+            }
+        }
+
+        return new IcmpResult(
+                false,
+                null,
+                attempted,
+                SystemClock.elapsedRealtime() - started);
+    }
+
+    /**
+     * Executes ping without a shell, so a configured target is passed as one
+     * process argument rather than interpreted as command text.
+     */
+    private static boolean checkIcmpTarget(String target, long deadline) {
+        Process process = null;
+
+        try {
+            process = startPingProcess(target);
+
+            // ping never needs stdin.
+            closeQuietly(process.getOutputStream());
+
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    return process.exitValue() == 0;
+                } catch (IllegalThreadStateException stillRunning) {
+                    // Process is still alive; enforce our own API-16-safe deadline.
+                }
+
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return false;
+                }
+
+                try {
+                    Thread.sleep(Math.min(ICMP_POLL_INTERVAL_MS, remaining));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+
+            return false;
+        } catch (IOException | RuntimeException ignored) {
+            // Missing/restricted ping binaries and filtered ICMP are diagnostic
+            // failures only; they never alter the normal Internet result.
+            return false;
+        } finally {
+            if (process != null) {
+                try {
+                    process.destroy();
+                } catch (RuntimeException ignored) {
+                    // Best-effort teardown on unusual OEM Process implementations.
+                }
+
+                closeQuietly(process.getInputStream());
+                closeQuietly(process.getErrorStream());
+                closeQuietly(process.getOutputStream());
+            }
+        }
+    }
+
+    private static Process startPingProcess(String target) throws IOException {
+        try {
+            return new ProcessBuilder(PING_BINARY, "-c", "1", target)
+                    .redirectErrorStream(true)
+                    .start();
+        } catch (IOException primaryFailure) {
+            // Some OEM builds expose ping through PATH rather than this exact path.
+            try {
+                return new ProcessBuilder("ping", "-c", "1", target)
+                        .redirectErrorStream(true)
+                        .start();
+            } catch (IOException fallbackFailure) {
+                // Keep the fallback path compatible with Android API 16-18;
+                // the suppressed-exception API is not available there.
+                throw fallbackFailure;
+            }
+        }
     }
 
     private static Request executeAsync(
@@ -1294,11 +1566,11 @@ public final class ConnectivityAndInternetAccess {
         boolean validated = connected
                 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED);
         boolean captivePortal = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && capabilities != null
                 && capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+                NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
         return new NetworkState(
                 connected,
                 validated,
@@ -1327,7 +1599,7 @@ public final class ConnectivityAndInternetAccess {
 
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.P
                 || capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
     }
 
     private static boolean hasTransport(Context context, int transport) {
@@ -1401,6 +1673,35 @@ public final class ConnectivityAndInternetAccess {
         return info != null && info.isAvailable() && info.isConnected();
     }
 
+    private static boolean isLegacyConnecting(ConnectivityManager connectivityManager) {
+        for (NetworkInfo info : legacyNetworks(connectivityManager)) {
+            if (info != null
+                    && info.isAvailable()
+                    && info.getState() == NetworkInfo.State.CONNECTING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean updateLegacyConnectingStallState(boolean connecting) {
+        synchronized (CONNECTION_ATTEMPT_LOCK) {
+            if (!connecting) {
+                legacyConnectingSinceElapsedRealtime = -1L;
+                return false;
+            }
+
+            long now = SystemClock.elapsedRealtime();
+            if (legacyConnectingSinceElapsedRealtime < 0L) {
+                legacyConnectingSinceElapsedRealtime = now;
+                return false;
+            }
+
+            return now - legacyConnectingSinceElapsedRealtime
+                    >= CONNECTION_ATTEMPT_TIMEOUT_MS;
+        }
+    }
+
     private static boolean isConnectionFast(int type, int subType) {
         if (type == ConnectivityManager.TYPE_WIFI
                 || type == ConnectivityManager.TYPE_ETHERNET) {
@@ -1448,6 +1749,39 @@ public final class ConnectivityAndInternetAccess {
             }
         }
         return null;
+    }
+
+    private static List<String> normalizeIcmpTargets(List<String> targets) {
+        if (targets == null) {
+            throw new IllegalArgumentException("icmpTargets == null");
+        }
+
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String raw : targets) {
+            if (raw == null) {
+                continue;
+            }
+
+            String value = raw.trim();
+            if (value.isEmpty()) {
+                continue;
+            }
+
+            /*
+             * ProcessBuilder already avoids shell injection. This validation also
+             * rejects option-looking values and command/path punctuation while still
+             * allowing IPv4, IPv6 zone identifiers, and ordinary host names.
+             */
+            if (value.startsWith("-")
+                    || !value.matches("[A-Za-z0-9._:%-]+")) {
+                throw new IllegalArgumentException(
+                        "Invalid ICMP target: " + value);
+            }
+
+            normalized.add(value);
+        }
+
+        return Collections.unmodifiableList(new ArrayList<>(normalized));
     }
 
     private static List<String> normalizeHosts(List<String> hosts) {
@@ -1589,6 +1923,18 @@ public final class ConnectivityAndInternetAccess {
         }
     }
 
+    private static void closeQuietly(Closeable closeable) {
+        if (closeable == null) {
+            return;
+        }
+
+        try {
+            closeable.close();
+        } catch (IOException ignored) {
+            // Best-effort process-stream cleanup.
+        }
+    }
+
     private static ExecutorService newProbeExecutor() {
         return Executors.newFixedThreadPool(MAX_PARALLEL_PROBES, runnable -> {
             Thread thread = new Thread(
@@ -1599,7 +1945,7 @@ public final class ConnectivityAndInternetAccess {
         });
     }
 
-    private static boolean closeConnectionAttempt(ConnectionAttempt attempt) {
+    private static boolean timeoutConnectionAttempt(ConnectionAttempt attempt) {
         synchronized (CONNECTION_ATTEMPT_LOCK) {
             if (attempt.closed) {
                 return false;
@@ -1608,7 +1954,33 @@ public final class ConnectivityAndInternetAccess {
             attempt.closed = true;
             CONNECTION_ATTEMPT_QUEUE.remove(attempt);
             CONNECTION_ATTEMPTS.updateAndGet(value -> value > 0 ? value - 1 : 0);
+            CONNECTION_ATTEMPT_STALLED.set(true);
             return true;
+        }
+    }
+
+    private static void expireTimedOutConnectionAttempts() {
+        long now = SystemClock.elapsedRealtime();
+
+        synchronized (CONNECTION_ATTEMPT_LOCK) {
+            while (!CONNECTION_ATTEMPT_QUEUE.isEmpty()) {
+                ConnectionAttempt attempt = CONNECTION_ATTEMPT_QUEUE.peekFirst();
+                if (attempt == null) {
+                    break;
+                }
+                if (attempt.closed) {
+                    CONNECTION_ATTEMPT_QUEUE.removeFirst();
+                    continue;
+                }
+                if (now - attempt.startedAtElapsedRealtime < CONNECTION_ATTEMPT_TIMEOUT_MS) {
+                    break;
+                }
+
+                attempt.closed = true;
+                CONNECTION_ATTEMPT_QUEUE.removeFirst();
+                CONNECTION_ATTEMPTS.updateAndGet(value -> value > 0 ? value - 1 : 0);
+                CONNECTION_ATTEMPT_STALLED.set(true);
+            }
         }
     }
 
@@ -1619,6 +1991,8 @@ public final class ConnectivityAndInternetAccess {
             }
             CONNECTION_ATTEMPT_QUEUE.clear();
             CONNECTION_ATTEMPTS.set(0);
+            CONNECTION_ATTEMPT_STALLED.set(false);
+            legacyConnectingSinceElapsedRealtime = -1L;
         }
     }
 
@@ -1647,7 +2021,12 @@ public final class ConnectivityAndInternetAccess {
     }
 
     private static final class ConnectionAttempt {
+        private final long startedAtElapsedRealtime;
         private boolean closed;
+
+        private ConnectionAttempt(long startedAtElapsedRealtime) {
+            this.startedAtElapsedRealtime = startedAtElapsedRealtime;
+        }
     }
 
     private static SSLSocketFactory createTls12Factory() {
