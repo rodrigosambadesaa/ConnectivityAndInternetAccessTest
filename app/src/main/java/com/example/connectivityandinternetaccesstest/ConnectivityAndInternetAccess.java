@@ -70,6 +70,18 @@ public final class ConnectivityAndInternetAccess {
         boolean checkHttp(String url, Network network);
     }
 
+    public interface TcpProbeStrategy {
+        boolean checkTcp(String host, int port, Network network);
+    }
+
+    public interface NtpProbeStrategy {
+        boolean checkNtp(String host, Network network);
+    }
+
+    public interface TlsProbeStrategy {
+        boolean checkTls(String host, int port, Network network);
+    }
+
     public interface InternetCallback {
         void onResult(InternetResult result);
     }
@@ -242,6 +254,7 @@ public final class ConnectivityAndInternetAccess {
             this.callback = callback;
             this.latestState = snapshotNetworkState(this.applicationContext);
 
+            // Deliver a useful initial value immediately through the same main-thread path.
             deliver(this.latestState);
             register();
         }
@@ -257,6 +270,9 @@ public final class ConnectivityAndInternetAccess {
 
                     @Override
                     public void onAvailable(Network network) {
+                        // Do not synchronously query NetworkCapabilities here. Android's
+                        // documentation warns that this is race-prone; wait for
+                        // onCapabilitiesChanged().
                         currentDefaultNetwork = network;
                     }
 
@@ -337,18 +353,20 @@ public final class ConnectivityAndInternetAccess {
     }
 
     private static final int MINIMUM_FAST_KBPS = 3_072;
-    private static final int CONNECT_TIMEOUT_MS = 800;
-    private static final int READ_TIMEOUT_MS = 800;
-    private static final int DNS_TIMEOUT_MS = 650;
-    private static final long EFFECTIVE_DNS_STAGE_TIMEOUT_MS = 350L;
-    private static final long DNS_STAGE_TIMEOUT_MS = 700L;
-    private static final long TOTAL_PROBE_TIMEOUT_MS = 2_000L;
-    private static final int MAX_PARALLEL_PROBES = 9;
+    private static final int CONNECT_TIMEOUT_MS = 3_000;
+    private static final int READ_TIMEOUT_MS = 3_000;
+    private static final int DNS_TIMEOUT_MS = 2_500;
+    private static final long EFFECTIVE_DNS_STAGE_TIMEOUT_MS = 1_500L;
+    private static final long DNS_STAGE_TIMEOUT_MS = 3_500L;
+    private static final long TOTAL_PROBE_TIMEOUT_MS = 6_000L;
+    private static final int MAX_PARALLEL_PROBES = 16;
     private static final long ICMP_ATTEMPT_TIMEOUT_MS = 800L;
     private static final long ICMP_TOTAL_TIMEOUT_MS = 1_500L;
     private static final long ICMP_POLL_INTERVAL_MS = 25L;
     private static final String PING_BINARY = "/system/bin/ping";
     private static final int DNS_PORT = 53;
+    private static final int NTP_PORT = 123;
+    private static final int HTTPS_PORT = 443;
     private static final long CONNECTION_ATTEMPT_TIMEOUT_MS = 30_000L;
     private static final String DNS_QUERY_NAME = "example.com";
 
@@ -356,7 +374,8 @@ public final class ConnectivityAndInternetAccess {
             "1.1.1.1",
             "8.8.8.8",
             "9.9.9.9",
-            "208.67.222.222"
+            "208.67.222.222",
+            "[2606:4700:4700::1111]"
     ));
 
     private static final List<String> DEFAULT_HOSTS = Collections.unmodifiableList(Arrays.asList(
@@ -374,13 +393,39 @@ public final class ConnectivityAndInternetAccess {
     private static final List<String> DEFAULT_ICMP_TARGETS =
             Collections.unmodifiableList(Arrays.asList(
                     "1.1.1.1",
-                    "8.8.8.8"
+                    "8.8.8.8",
+                    "[2606:4700:4700::1111]"
+            ));
+
+    private static final List<String> DEFAULT_TCP_TARGETS =
+            Collections.unmodifiableList(Arrays.asList(
+                    "1.1.1.1:53",
+                    "8.8.8.8:443",
+                    "[2606:4700:4700::1111]:53"
+            ));
+
+    private static final List<String> DEFAULT_NTP_TARGETS =
+            Collections.unmodifiableList(Arrays.asList(
+                    "time.google.com",
+                    "pool.ntp.org"
+            ));
+
+    private static final List<String> DEFAULT_TLS_TARGETS =
+            Collections.unmodifiableList(Arrays.asList(
+                    "www.google.com:443",
+                    "cloudflare.com:443"
             ));
 
     private static volatile List<String> globalHosts = DEFAULT_HOSTS;
     private static volatile List<String> globalResolvers = DEFAULT_DNS_RESOLVERS;
+    private static volatile List<String> globalTcpTargets = DEFAULT_TCP_TARGETS;
+    private static volatile List<String> globalNtpTargets = DEFAULT_NTP_TARGETS;
+    private static volatile List<String> globalTlsTargets = DEFAULT_TLS_TARGETS;
     private static volatile DnsProbeStrategy globalDnsStrategy = new DefaultDnsProbe();
     private static volatile HttpProbeStrategy globalHttpStrategy = new DefaultHttpProbe();
+    private static volatile TcpProbeStrategy globalTcpStrategy = new DefaultTcpProbe();
+    private static volatile NtpProbeStrategy globalNtpStrategy = new DefaultNtpProbe();
+    private static volatile TlsProbeStrategy globalTlsStrategy = new DefaultTlsProbe();
 
     private static final Object CONNECTION_ATTEMPT_LOCK = new Object();
     private static final Deque<ConnectionAttempt> CONNECTION_ATTEMPT_QUEUE = new ArrayDeque<>();
@@ -406,8 +451,14 @@ public final class ConnectivityAndInternetAccess {
 
     private final List<String> instanceHosts;
     private final List<String> instanceResolvers;
+    private final List<String> instanceTcpTargets;
+    private final List<String> instanceNtpTargets;
+    private final List<String> instanceTlsTargets;
     private final DnsProbeStrategy instanceDnsStrategy;
     private final HttpProbeStrategy instanceHttpStrategy;
+    private final TcpProbeStrategy instanceTcpStrategy;
+    private final NtpProbeStrategy instanceNtpStrategy;
+    private final TlsProbeStrategy instanceTlsStrategy;
     private final List<String> instanceIcmpTargets;
 
     /**
@@ -417,8 +468,14 @@ public final class ConnectivityAndInternetAccess {
     public ConnectivityAndInternetAccess(ArrayList<String> hosts) {
         this.instanceHosts = normalizeHosts(hosts);
         this.instanceResolvers = DEFAULT_DNS_RESOLVERS;
+        this.instanceTcpTargets = DEFAULT_TCP_TARGETS;
+        this.instanceNtpTargets = DEFAULT_NTP_TARGETS;
+        this.instanceTlsTargets = DEFAULT_TLS_TARGETS;
         this.instanceDnsStrategy = new DefaultDnsProbe();
         this.instanceHttpStrategy = new DefaultHttpProbe();
+        this.instanceTcpStrategy = new DefaultTcpProbe();
+        this.instanceNtpStrategy = new DefaultNtpProbe();
+        this.instanceTlsStrategy = new DefaultTlsProbe();
         this.instanceIcmpTargets = DEFAULT_ICMP_TARGETS;
         globalHosts = this.instanceHosts;
     }
@@ -426,21 +483,41 @@ public final class ConnectivityAndInternetAccess {
     private ConnectivityAndInternetAccess(Builder builder) {
         this.instanceHosts = normalizeHosts(builder.hosts);
         this.instanceResolvers = normalizeDnsResolvers(builder.dnsResolvers);
+        this.instanceTcpTargets = normalizeEndpointTargets(
+                builder.tcpTargets, HTTPS_PORT, "tcpTargets");
+        this.instanceNtpTargets = normalizeNtpTargets(builder.ntpTargets);
+        this.instanceTlsTargets = normalizeEndpointTargets(
+                builder.tlsTargets, HTTPS_PORT, "tlsTargets");
         this.instanceDnsStrategy = builder.dnsStrategy != null
                 ? builder.dnsStrategy
                 : new DefaultDnsProbe();
         this.instanceHttpStrategy = builder.httpStrategy != null
                 ? builder.httpStrategy
                 : new DefaultHttpProbe();
+        this.instanceTcpStrategy = builder.tcpStrategy != null
+                ? builder.tcpStrategy
+                : new DefaultTcpProbe();
+        this.instanceNtpStrategy = builder.ntpStrategy != null
+                ? builder.ntpStrategy
+                : new DefaultNtpProbe();
+        this.instanceTlsStrategy = builder.tlsStrategy != null
+                ? builder.tlsStrategy
+                : new DefaultTlsProbe();
         this.instanceIcmpTargets = normalizeIcmpTargets(builder.icmpTargets);
     }
 
     public static final class Builder {
         private List<String> hosts = DEFAULT_HOSTS;
         private List<String> dnsResolvers = DEFAULT_DNS_RESOLVERS;
+        private List<String> tcpTargets = DEFAULT_TCP_TARGETS;
+        private List<String> ntpTargets = DEFAULT_NTP_TARGETS;
+        private List<String> tlsTargets = DEFAULT_TLS_TARGETS;
         private List<String> icmpTargets = DEFAULT_ICMP_TARGETS;
         private DnsProbeStrategy dnsStrategy;
         private HttpProbeStrategy httpStrategy;
+        private TcpProbeStrategy tcpStrategy;
+        private NtpProbeStrategy ntpStrategy;
+        private TlsProbeStrategy tlsStrategy;
 
         public Builder setHosts(List<String> hosts) {
             this.hosts = hosts;
@@ -449,6 +526,21 @@ public final class ConnectivityAndInternetAccess {
 
         public Builder setDnsResolvers(List<String> resolvers) {
             this.dnsResolvers = resolvers;
+            return this;
+        }
+
+        public Builder setTcpTargets(List<String> targets) {
+            this.tcpTargets = targets;
+            return this;
+        }
+
+        public Builder setNtpTargets(List<String> targets) {
+            this.ntpTargets = targets;
+            return this;
+        }
+
+        public Builder setTlsTargets(List<String> targets) {
+            this.tlsTargets = targets;
             return this;
         }
 
@@ -473,6 +565,21 @@ public final class ConnectivityAndInternetAccess {
             return this;
         }
 
+        public Builder setTcpProbeStrategy(TcpProbeStrategy strategy) {
+            this.tcpStrategy = strategy;
+            return this;
+        }
+
+        public Builder setNtpProbeStrategy(NtpProbeStrategy strategy) {
+            this.ntpStrategy = strategy;
+            return this;
+        }
+
+        public Builder setTlsProbeStrategy(TlsProbeStrategy strategy) {
+            this.tlsStrategy = strategy;
+            return this;
+        }
+
         public ConnectivityAndInternetAccess build() {
             return new ConnectivityAndInternetAccess(this);
         }
@@ -481,18 +588,29 @@ public final class ConnectivityAndInternetAccess {
     public static Builder strictCaptivePortalBuilder() {
         return new Builder()
                 .setDnsResolvers(Collections.emptyList())
+                .setTcpTargets(Collections.emptyList())
+                .setNtpTargets(Collections.emptyList())
+                .setTlsTargets(Collections.emptyList())
                 .setHosts(Collections.singletonList(
                         "https://connectivitycheck.gstatic.com/generate_204"))
                 .setHttpProbeStrategy(new StrictHttpProbe());
     }
+
+    // Instance API: preferred for new code.
 
     public Request checkInternetAsync(Context context, InternetCallback callback) {
         return executeAsync(
                 context,
                 instanceResolvers,
                 instanceHosts,
+                instanceTcpTargets,
+                instanceNtpTargets,
+                instanceTlsTargets,
                 instanceDnsStrategy,
                 instanceHttpStrategy,
+                instanceTcpStrategy,
+                instanceNtpStrategy,
+                instanceTlsStrategy,
                 callback);
     }
 
@@ -501,8 +619,14 @@ public final class ConnectivityAndInternetAccess {
                 context,
                 instanceResolvers,
                 instanceHosts,
+                instanceTcpTargets,
+                instanceNtpTargets,
+                instanceTlsTargets,
                 instanceDnsStrategy,
-                instanceHttpStrategy);
+                instanceHttpStrategy,
+                instanceTcpStrategy,
+                instanceNtpStrategy,
+                instanceTlsStrategy);
     }
 
     /**
@@ -524,6 +648,8 @@ public final class ConnectivityAndInternetAccess {
     public IcmpResult checkIcmpReachabilityBlocking() {
         return executeIcmpBlocking(instanceIcmpTargets);
     }
+
+    // Connectivity API.
 
     public static boolean isActiveNetworkConnected(Context context) {
         return isConnected(context);
@@ -611,7 +737,7 @@ public final class ConnectivityAndInternetAccess {
                 legacyConnectingSinceElapsedRealtime = -1L;
             }
             // Timestamp at enqueue time so queue order and timeout order cannot diverge
-            // even when several callers begin attempts concurrently.
+            // when several callers begin attempts concurrently.
             attempt = new ConnectionAttempt(SystemClock.elapsedRealtime());
             CONNECTION_ATTEMPT_QUEUE.addLast(attempt);
             CONNECTION_ATTEMPTS.incrementAndGet();
@@ -656,7 +782,6 @@ public final class ConnectivityAndInternetAccess {
             }
         }
 
-        expireTimedOutConnectionAttempts();
         return CONNECTION_ATTEMPTS.get() > 0;
     }
 
@@ -705,6 +830,8 @@ public final class ConnectivityAndInternetAccess {
                     connectivityManager.getNetworkCapabilities(active));
         }
 
+        // Before API 23 there is no default-Network object and no VALIDATED or
+        // CAPTIVE_PORTAL capability. activeNetworkInfo represents the legacy default.
         boolean connected = isConnectedLegacy(connectivityManager.getActiveNetworkInfo());
         return new NetworkState(
                 connected,
@@ -740,7 +867,9 @@ public final class ConnectivityAndInternetAccess {
         return active != null && isInternetValidated(context, active);
     }
 
-    /** Network-specific variant of {@link #isInternetValidated(Context)}. */
+    /**
+     * Network-specific variant of {@link #isInternetValidated(Context)}.
+     */
     public static boolean isInternetValidated(Context context, Network network) {
         requireContext(context);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || network == null) {
@@ -770,7 +899,9 @@ public final class ConnectivityAndInternetAccess {
         return active != null && isCaptivePortalDetected(context, active);
     }
 
-    /** Network-specific variant of {@link #isCaptivePortalDetected(Context)}. */
+    /**
+     * Network-specific variant of {@link #isCaptivePortalDetected(Context)}.
+     */
     public static boolean isCaptivePortalDetected(Context context, Network network) {
         requireContext(context);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || network == null) {
@@ -1011,6 +1142,18 @@ public final class ConnectivityAndInternetAccess {
         return DEFAULT_DNS_RESOLVERS;
     }
 
+    public static List<String> defaultTcpTargets() {
+        return DEFAULT_TCP_TARGETS;
+    }
+
+    public static List<String> defaultNtpTargets() {
+        return DEFAULT_NTP_TARGETS;
+    }
+
+    public static List<String> defaultTlsTargets() {
+        return DEFAULT_TLS_TARGETS;
+    }
+
     public static List<String> defaultIcmpTargets() {
         return DEFAULT_ICMP_TARGETS;
     }
@@ -1081,7 +1224,7 @@ public final class ConnectivityAndInternetAccess {
         Process process = null;
 
         try {
-            process = startPingProcess(target);
+            process = startPingProcess(stripAddressBrackets(target));
 
             // ping never needs stdin.
             closeQuietly(process.getOutputStream());
@@ -1138,11 +1281,75 @@ public final class ConnectivityAndInternetAccess {
                         .redirectErrorStream(true)
                         .start();
             } catch (IOException fallbackFailure) {
-                // Keep the fallback path compatible with Android API 16-18;
-                // the suppressed-exception API is not available there.
                 throw fallbackFailure;
             }
         }
+    }
+
+    private static Request executeAsync(
+            Context context,
+            List<String> dnsResolvers,
+            List<String> hosts,
+            List<String> tcpTargets,
+            List<String> ntpTargets,
+            List<String> tlsTargets,
+            DnsProbeStrategy dnsStrategy,
+            HttpProbeStrategy httpStrategy,
+            TcpProbeStrategy tcpStrategy,
+            NtpProbeStrategy ntpStrategy,
+            TlsProbeStrategy tlsStrategy,
+            InternetCallback callback) {
+        requireContext(context);
+        if (callback == null) {
+            throw new IllegalArgumentException("callback == null");
+        }
+
+        Context applicationContext = context.getApplicationContext();
+        final Context appContext = applicationContext != null ? applicationContext : context;
+        final List<String> normalizedResolvers = normalizeDnsResolvers(dnsResolvers);
+        final List<String> normalizedHosts = normalizeHosts(hosts);
+        final List<String> normalizedTcpTargets =
+                normalizeEndpointTargets(tcpTargets, HTTPS_PORT, "tcpTargets");
+        final List<String> normalizedNtpTargets = normalizeNtpTargets(ntpTargets);
+        final List<String> normalizedTlsTargets =
+                normalizeEndpointTargets(tlsTargets, HTTPS_PORT, "tlsTargets");
+        final DnsProbeStrategy effectiveDnsStrategy =
+                dnsStrategy != null ? dnsStrategy : new DefaultDnsProbe();
+        final HttpProbeStrategy effectiveHttpStrategy =
+                httpStrategy != null ? httpStrategy : new DefaultHttpProbe();
+        final TcpProbeStrategy effectiveTcpStrategy =
+                tcpStrategy != null ? tcpStrategy : new DefaultTcpProbe();
+        final NtpProbeStrategy effectiveNtpStrategy =
+                ntpStrategy != null ? ntpStrategy : new DefaultNtpProbe();
+        final TlsProbeStrategy effectiveTlsStrategy =
+                tlsStrategy != null ? tlsStrategy : new DefaultTlsProbe();
+        final Request request = new Request();
+
+        Future<?> future = EXECUTOR.submit(() -> {
+            InternetResult result = executeBlocking(
+                    appContext,
+                    normalizedResolvers,
+                    normalizedHosts,
+                    normalizedTcpTargets,
+                    normalizedNtpTargets,
+                    normalizedTlsTargets,
+                    effectiveDnsStrategy,
+                    effectiveHttpStrategy,
+                    effectiveTcpStrategy,
+                    effectiveNtpStrategy,
+                    effectiveTlsStrategy);
+
+            if (!request.isCancelled()) {
+                MAIN_HANDLER.post(() -> {
+                    if (!request.isCancelled()) {
+                        callback.onResult(result);
+                    }
+                });
+            }
+        });
+
+        request.attach(future);
+        return request;
     }
 
     private static Request executeAsync(
@@ -1172,8 +1379,14 @@ public final class ConnectivityAndInternetAccess {
                     appContext,
                     normalizedResolvers,
                     normalizedHosts,
+                    globalTcpTargets,
+                    globalNtpTargets,
+                    globalTlsTargets,
                     effectiveDnsStrategy,
-                    effectiveHttpStrategy);
+                    effectiveHttpStrategy,
+                    globalTcpStrategy,
+                    globalNtpStrategy,
+                    globalTlsStrategy);
 
             if (!request.isCancelled()) {
                 MAIN_HANDLER.post(() -> {
@@ -1194,6 +1407,32 @@ public final class ConnectivityAndInternetAccess {
             List<String> hosts,
             DnsProbeStrategy dnsStrategy,
             HttpProbeStrategy httpStrategy) {
+        return executeBlocking(
+                context,
+                dnsResolvers,
+                hosts,
+                globalTcpTargets,
+                globalNtpTargets,
+                globalTlsTargets,
+                dnsStrategy,
+                httpStrategy,
+                globalTcpStrategy,
+                globalNtpStrategy,
+                globalTlsStrategy);
+    }
+
+    private static InternetResult executeBlocking(
+            Context context,
+            List<String> dnsResolvers,
+            List<String> hosts,
+            List<String> tcpTargets,
+            List<String> ntpTargets,
+            List<String> tlsTargets,
+            DnsProbeStrategy dnsStrategy,
+            HttpProbeStrategy httpStrategy,
+            TcpProbeStrategy tcpStrategy,
+            NtpProbeStrategy ntpStrategy,
+            TlsProbeStrategy tlsStrategy) {
         requireContext(context);
 
         long started = SystemClock.elapsedRealtime();
@@ -1221,6 +1460,11 @@ public final class ConnectivityAndInternetAccess {
         ExecutorService probeExecutor = newProbeExecutor();
         try {
             List<String> normalizedResolvers = normalizeDnsResolvers(dnsResolvers);
+            List<String> normalizedTcpTargets =
+                    normalizeEndpointTargets(tcpTargets, HTTPS_PORT, "tcpTargets");
+            List<String> normalizedNtpTargets = normalizeNtpTargets(ntpTargets);
+            List<String> normalizedTlsTargets =
+                    normalizeEndpointTargets(tlsTargets, HTTPS_PORT, "tlsTargets");
             String reached = null;
 
             /*
@@ -1255,15 +1499,26 @@ public final class ConnectivityAndInternetAccess {
                 }
             }
 
-            List<ProbeAttempt> dnsAttempts = new ArrayList<>();
+            List<ProbeAttempt> transportAttempts = new ArrayList<>();
             for (String resolver : normalizedResolvers) {
-                dnsAttempts.add(new ProbeAttempt(
+                transportAttempts.add(new ProbeAttempt(
                         dnsEndpointLabel(resolver),
                         () -> dnsStrategy.checkDns(resolver, network)));
             }
+            for (String target : normalizedTcpTargets) {
+                Endpoint endpoint = parseEndpoint(target, HTTPS_PORT);
+                transportAttempts.add(new ProbeAttempt(
+                        endpointLabel("tcp", endpoint),
+                        () -> tcpStrategy.checkTcp(endpoint.host, endpoint.port, network)));
+            }
+            for (String host : normalizedNtpTargets) {
+                transportAttempts.add(new ProbeAttempt(
+                        endpointLabel("ntp", new Endpoint(host, NTP_PORT)),
+                        () -> ntpStrategy.checkNtp(host, network)));
+            }
 
             reached = raceProbes(
-                    dnsAttempts,
+                    transportAttempts,
                     attempted,
                     Math.min(deadline, started + DNS_STAGE_TIMEOUT_MS),
                     probeExecutor);
@@ -1276,15 +1531,21 @@ public final class ConnectivityAndInternetAccess {
                         SystemClock.elapsedRealtime() - started);
             }
 
-            List<ProbeAttempt> hostAttempts = new ArrayList<>();
+            List<ProbeAttempt> applicationAttempts = new ArrayList<>();
             for (String host : normalizeHosts(hosts)) {
-                hostAttempts.add(new ProbeAttempt(
+                applicationAttempts.add(new ProbeAttempt(
                         host,
                         () -> httpStrategy.checkHttp(host, network)));
             }
+            for (String target : normalizedTlsTargets) {
+                Endpoint endpoint = parseEndpoint(target, HTTPS_PORT);
+                applicationAttempts.add(new ProbeAttempt(
+                        endpointLabel("tls", endpoint),
+                        () -> tlsStrategy.checkTls(endpoint.host, endpoint.port, network)));
+            }
 
             reached = raceProbes(
-                    hostAttempts,
+                    applicationAttempts,
                     attempted,
                     deadline,
                     probeExecutor);
@@ -1382,10 +1643,119 @@ public final class ConnectivityAndInternetAccess {
         return "dns://system/" + DNS_QUERY_NAME;
     }
 
+    public static final class DefaultTcpProbe implements TcpProbeStrategy {
+        @Override
+        public boolean checkTcp(String host, int port, Network network) {
+            Socket socket = null;
+
+            try {
+                socket = new Socket();
+                if (network != null
+                        && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    network.bindSocket(socket);
+                }
+
+                InetAddress address = resolveAddress(host, network);
+                socket.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MS);
+                return socket.isConnected();
+            } catch (IOException | RuntimeException ignored) {
+                return false;
+            } finally {
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                        // Best-effort socket cleanup.
+                    }
+                }
+            }
+        }
+    }
+
+    public static final class DefaultNtpProbe implements NtpProbeStrategy {
+        @Override
+        public boolean checkNtp(String host, Network network) {
+            DatagramSocket socket = null;
+
+            try {
+                socket = new DatagramSocket();
+                if (network != null
+                        && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                    network.bindSocket(socket);
+                }
+
+                socket.setSoTimeout(DNS_TIMEOUT_MS);
+                InetAddress address = resolveAddress(host, network);
+                byte[] request = new byte[48];
+                request[0] = 0x1B;
+                socket.send(new DatagramPacket(
+                        request,
+                        request.length,
+                        address,
+                        NTP_PORT));
+
+                byte[] buffer = new byte[48];
+                DatagramPacket response = new DatagramPacket(buffer, buffer.length);
+                socket.receive(response);
+                return response.getLength() >= 48;
+            } catch (IOException | RuntimeException ignored) {
+                return false;
+            } finally {
+                if (socket != null) {
+                    socket.close();
+                }
+            }
+        }
+    }
+
+    public static final class DefaultTlsProbe implements TlsProbeStrategy {
+        @Override
+        public boolean checkTls(String host, int port, Network network) {
+            Socket socket = null;
+            SSLSocket sslSocket = null;
+
+            try {
+                socket = new Socket();
+                if (network != null
+                        && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    network.bindSocket(socket);
+                }
+
+                InetAddress address = resolveAddress(host, network);
+                socket.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MS);
+                socket.setSoTimeout(READ_TIMEOUT_MS);
+
+                SSLSocketFactory factory = TLS_12_SOCKET_FACTORY != null
+                        ? TLS_12_SOCKET_FACTORY
+                        : (SSLSocketFactory) SSLSocketFactory.getDefault();
+                sslSocket = (SSLSocket) factory.createSocket(socket, host, port, true);
+                sslSocket.setSoTimeout(READ_TIMEOUT_MS);
+                sslSocket.startHandshake();
+                return true;
+            } catch (IOException | RuntimeException ignored) {
+                return false;
+            } finally {
+                if (sslSocket != null) {
+                    try {
+                        sslSocket.close();
+                    } catch (IOException ignored) {
+                        // Best-effort TLS socket cleanup.
+                    }
+                } else if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                        // Best-effort socket cleanup.
+                    }
+                }
+            }
+        }
+    }
+
     public static final class DefaultDnsProbe implements DnsProbeStrategy {
         @Override
         public boolean checkDns(String resolver, Network network) {
-            DnsResolver endpoint = parseDnsResolver(resolver);
+            Endpoint endpoint = parseEndpoint(resolver, DNS_PORT);
             DatagramSocket socket = null;
 
             try {
@@ -1399,7 +1769,9 @@ public final class ConnectivityAndInternetAccess {
                 }
 
                 socket.setSoTimeout(DNS_TIMEOUT_MS);
-                socket.connect(new InetSocketAddress(endpoint.host, endpoint.port));
+                socket.connect(new InetSocketAddress(
+                        resolveAddress(endpoint.host, network),
+                        endpoint.port));
                 socket.send(new DatagramPacket(query, query.length));
 
                 byte[] buffer = new byte[512];
@@ -1673,35 +2045,6 @@ public final class ConnectivityAndInternetAccess {
         return info != null && info.isAvailable() && info.isConnected();
     }
 
-    private static boolean isLegacyConnecting(ConnectivityManager connectivityManager) {
-        for (NetworkInfo info : legacyNetworks(connectivityManager)) {
-            if (info != null
-                    && info.isAvailable()
-                    && info.getState() == NetworkInfo.State.CONNECTING) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean updateLegacyConnectingStallState(boolean connecting) {
-        synchronized (CONNECTION_ATTEMPT_LOCK) {
-            if (!connecting) {
-                legacyConnectingSinceElapsedRealtime = -1L;
-                return false;
-            }
-
-            long now = SystemClock.elapsedRealtime();
-            if (legacyConnectingSinceElapsedRealtime < 0L) {
-                legacyConnectingSinceElapsedRealtime = now;
-                return false;
-            }
-
-            return now - legacyConnectingSinceElapsedRealtime
-                    >= CONNECTION_ATTEMPT_TIMEOUT_MS;
-        }
-    }
-
     private static boolean isConnectionFast(int type, int subType) {
         if (type == ConnectivityManager.TYPE_WIFI
                 || type == ConnectivityManager.TYPE_ETHERNET) {
@@ -1772,8 +2115,11 @@ public final class ConnectivityAndInternetAccess {
              * rejects option-looking values and command/path punctuation while still
              * allowing IPv4, IPv6 zone identifiers, and ordinary host names.
              */
+            String processTarget = stripAddressBrackets(value);
             if (value.startsWith("-")
-                    || !value.matches("[A-Za-z0-9._:%-]+")) {
+                    || processTarget.startsWith("-")
+                    || processTarget.isEmpty()
+                    || !processTarget.matches("[A-Za-z0-9._:%-]+")) {
                 throw new IllegalArgumentException(
                         "Invalid ICMP target: " + value);
             }
@@ -1818,6 +2164,56 @@ public final class ConnectivityAndInternetAccess {
         return Collections.unmodifiableList(new ArrayList<>(normalized));
     }
 
+    private static List<String> normalizeEndpointTargets(
+            List<String> targets,
+            int defaultPort,
+            String argumentName) {
+        if (targets == null) {
+            throw new IllegalArgumentException(argumentName + " == null");
+        }
+
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String raw : targets) {
+            if (raw == null) {
+                continue;
+            }
+
+            String value = raw.trim();
+            if (!value.isEmpty()) {
+                parseEndpoint(value, defaultPort);
+                normalized.add(value);
+            }
+        }
+
+        return Collections.unmodifiableList(new ArrayList<>(normalized));
+    }
+
+    private static List<String> normalizeNtpTargets(List<String> targets) {
+        if (targets == null) {
+            throw new IllegalArgumentException("ntpTargets == null");
+        }
+
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String raw : targets) {
+            if (raw == null) {
+                continue;
+            }
+
+            String value = raw.trim();
+            if (value.isEmpty()) {
+                continue;
+            }
+
+            Endpoint endpoint = parseEndpoint(value, NTP_PORT);
+            if (endpoint.port != NTP_PORT) {
+                throw new IllegalArgumentException("NTP target must use port 123: " + value);
+            }
+            normalized.add(endpoint.host);
+        }
+
+        return Collections.unmodifiableList(new ArrayList<>(normalized));
+    }
+
     private static List<String> normalizeDnsResolvers(List<String> resolvers) {
         if (resolvers == null) {
             throw new IllegalArgumentException("dnsResolvers == null");
@@ -1831,7 +2227,7 @@ public final class ConnectivityAndInternetAccess {
 
             String value = raw.trim();
             if (!value.isEmpty()) {
-                parseDnsResolver(value);
+                parseEndpoint(value, DNS_PORT);
                 normalized.add(value);
             }
         }
@@ -1858,68 +2254,103 @@ public final class ConnectivityAndInternetAccess {
     }
 
     private static String dnsEndpointLabel(String resolver) {
-        DnsResolver endpoint = parseDnsResolver(resolver);
+        return endpointLabel("dns", parseEndpoint(resolver, DNS_PORT));
+    }
+
+    private static String endpointLabel(String scheme, Endpoint endpoint) {
         String host = endpoint.host.indexOf(':') >= 0
                 ? "[" + endpoint.host + "]"
                 : endpoint.host;
-        return "dns://" + host + ":" + endpoint.port;
+        return scheme + "://" + host + ":" + endpoint.port;
     }
 
-    private static DnsResolver parseDnsResolver(String resolver) {
-        if (resolver == null) {
-            throw new IllegalArgumentException("resolver == null");
+    private static Endpoint parseEndpoint(String target, int defaultPort) {
+        if (target == null) {
+            throw new IllegalArgumentException("target == null");
+        }
+        if (defaultPort <= 0 || defaultPort > 65_535) {
+            throw new IllegalArgumentException("Invalid default port: " + defaultPort);
         }
 
-        String value = resolver.trim();
+        String value = target.trim();
         if (value.isEmpty()) {
-            throw new IllegalArgumentException("Invalid DNS resolver");
+            throw new IllegalArgumentException("Invalid endpoint");
         }
 
         String host;
-        int port = DNS_PORT;
+        int port = defaultPort;
 
         if (value.startsWith("[")) {
             int closingBracket = value.indexOf(']');
-            if (closingBracket <= 1) {
-                throw new IllegalArgumentException("Invalid DNS resolver");
+            if (closingBracket <= 1 || value.indexOf('[', 1) >= 0) {
+                throw new IllegalArgumentException("Invalid endpoint: " + target);
             }
 
             host = value.substring(1, closingBracket).trim();
             String remainder = value.substring(closingBracket + 1).trim();
             if (!remainder.isEmpty()) {
-                if (!remainder.startsWith(":")) {
-                    throw new IllegalArgumentException("Invalid DNS resolver");
+                if (!remainder.startsWith(":") || remainder.indexOf(':', 1) >= 0) {
+                    throw new IllegalArgumentException("Invalid endpoint: " + target);
                 }
                 port = parsePort(remainder.substring(1));
             }
         } else {
+            if (value.indexOf('[') >= 0 || value.indexOf(']') >= 0) {
+                throw new IllegalArgumentException("Invalid endpoint: " + target);
+            }
+
             int firstColon = value.indexOf(':');
             int lastColon = value.lastIndexOf(':');
-
-            if (firstColon > 0 && firstColon == lastColon) {
+            if (firstColon >= 0 && firstColon == lastColon) {
                 host = value.substring(0, firstColon).trim();
                 port = parsePort(value.substring(firstColon + 1));
             } else {
+                // Multiple colons without brackets are a bare IPv6 literal.
                 host = value;
             }
         }
 
-        if (host.isEmpty() || port < 1 || port > 65_535) {
-            throw new IllegalArgumentException("Invalid DNS resolver");
+        if (host.isEmpty()) {
+            throw new IllegalArgumentException("Invalid endpoint: " + target);
         }
 
-        return new DnsResolver(host, port);
+        return new Endpoint(host, port);
+    }
+
+    private static String stripAddressBrackets(String target) {
+        if (target != null
+                && target.length() > 2
+                && target.charAt(0) == '['
+                && target.charAt(target.length() - 1) == ']') {
+            return target.substring(1, target.length() - 1);
+        }
+        return target == null ? "" : target;
+    }
+
+    private static InetAddress resolveAddress(String host, Network network) throws IOException {
+        InetAddress[] addresses;
+        if (network != null
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            addresses = network.getAllByName(host);
+        } else {
+            addresses = InetAddress.getAllByName(host);
+        }
+
+        if (addresses == null || addresses.length == 0) {
+            throw new IOException("No addresses for " + host);
+        }
+        return addresses[0];
     }
 
     private static int parsePort(String rawPort) {
         try {
             int port = Integer.parseInt(rawPort.trim());
             if (port < 1 || port > 65_535) {
-                throw new IllegalArgumentException("Invalid DNS resolver port");
+                throw new IllegalArgumentException("Invalid endpoint port");
             }
             return port;
         } catch (NumberFormatException exception) {
-            throw new IllegalArgumentException("Invalid DNS resolver port", exception);
+            throw new IllegalArgumentException("Invalid endpoint port", exception);
         }
     }
 
@@ -1984,6 +2415,35 @@ public final class ConnectivityAndInternetAccess {
         }
     }
 
+    private static boolean isLegacyConnecting(ConnectivityManager connectivityManager) {
+        for (NetworkInfo info : legacyNetworks(connectivityManager)) {
+            if (info != null
+                    && info.isAvailable()
+                    && info.getState() == NetworkInfo.State.CONNECTING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean updateLegacyConnectingStallState(boolean connecting) {
+        synchronized (CONNECTION_ATTEMPT_LOCK) {
+            if (!connecting) {
+                legacyConnectingSinceElapsedRealtime = -1L;
+                return false;
+            }
+
+            long now = SystemClock.elapsedRealtime();
+            if (legacyConnectingSinceElapsedRealtime < 0L) {
+                legacyConnectingSinceElapsedRealtime = now;
+                return false;
+            }
+
+            return now - legacyConnectingSinceElapsedRealtime
+                    >= CONNECTION_ATTEMPT_TIMEOUT_MS;
+        }
+    }
+
     private static void clearConnectionAttempts() {
         synchronized (CONNECTION_ATTEMPT_LOCK) {
             for (ConnectionAttempt attempt : CONNECTION_ATTEMPT_QUEUE) {
@@ -2010,11 +2470,11 @@ public final class ConnectivityAndInternetAccess {
         }
     }
 
-    private static final class DnsResolver {
+    private static final class Endpoint {
         private final String host;
         private final int port;
 
-        private DnsResolver(String host, int port) {
+        private Endpoint(String host, int port) {
             this.host = host;
             this.port = port;
         }
