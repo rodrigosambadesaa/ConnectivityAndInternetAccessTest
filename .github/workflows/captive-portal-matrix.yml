@@ -42,6 +42,40 @@ jobs:
           grep -q 'class StrictHttpProbe' "$target"
           grep -q 'generate_204' "$target"
 
+      - name: Create CI-only Firebase config
+        shell: bash
+        run: |
+          cat > app/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "123456789012",
+              "project_id": "connectivity-ci-placeholder",
+              "storage_bucket": "connectivity-ci-placeholder.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789012:android:0123456789abcdef",
+                  "android_client_info": {
+                    "package_name": "com.example.connectivityandinternetaccesstest"
+                  }
+                },
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyCIPlaceholderNotARealCredential000000"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          JSON
+
       - name: Run strict captive-portal simulation matrix
         shell: bash
         run: |
