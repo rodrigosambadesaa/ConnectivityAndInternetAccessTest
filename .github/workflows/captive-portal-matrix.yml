@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -42,7 +42,10 @@ jobs:
           grep -q 'generate_204' "$target"
 
       - name: Run strict captive-portal simulation matrix
-        run: ./gradlew --no-daemon testDebugUnitTest --tests 'net.i2p.android.router.util.StrictCaptivePortalProbeTest'
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest --tests 'net.i2p.android.router.util.StrictCaptivePortalProbeTest'
 
       - name: Upload unit-test reports
         if: always()
