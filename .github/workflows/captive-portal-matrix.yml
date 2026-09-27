@@ -1,5 +1,6 @@
 name: Captive portal matrix
 
+# Tests the current connectivity gist against reproducible local captive-portal simulations.
 on:
   push:
     branches:
