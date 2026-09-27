@@ -1,0 +1,54 @@
+name: Sync latest connectivity gist once
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/sync-gist-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Download latest gist and adapt package for demo app
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(mktemp)"
+          curl --fail --location --retry 3 \
+            'https://gist.githubusercontent.com/rodrigosambadesaa/729cca29a031fef4e2f15751863b655f/raw/ConnectivityAndInternetAccess.java' \
+            --output "$raw"
+
+          grep -q '^package net\.i2p\.android\.router\.util;$' "$raw"
+          grep -q 'public final class ConnectivityAndInternetAccess' "$raw"
+
+          target='app/src/main/java/com/example/connectivityandinternetaccesstest/ConnectivityAndInternetAccess.java'
+          sed 's/^package net\.i2p\.android\.router\.util;$/package com.example.connectivityandinternetaccesstest;/' "$raw" > "$target"
+
+          grep -q '^package com\.example\.connectivityandinternetaccesstest;$' "$target"
+
+      - name: Commit synchronized source and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add app/src/main/java/com/example/connectivityandinternetaccesstest/ConnectivityAndInternetAccess.java
+          git rm .github/workflows/sync-gist-once.yml
+
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+
+          git commit -m 'Sync demo app with latest connectivity gist'
+          git push origin HEAD:master
