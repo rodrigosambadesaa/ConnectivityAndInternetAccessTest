@@ -3,6 +3,7 @@ name: Captive portal matrix
 on:
   push:
     branches:
+      - master
       - ci/captive-portal-matrix
   pull_request:
     branches:
