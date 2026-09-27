@@ -1,0 +1,55 @@
+name: Captive portal matrix
+
+on:
+  push:
+    branches:
+      - master
+      - ci/captive-portal-matrix
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  strict-captive-portal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Download current Java implementation from gist
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='app/src/test/java/net/i2p/android/router/util/ConnectivityAndInternetAccess.java'
+          mkdir -p "$(dirname "$target")"
+          curl --fail --location --retry 3 \
+            'https://gist.githubusercontent.com/rodrigosambadesaa/729cca29a031fef4e2f15751863b655f/raw/ConnectivityAndInternetAccess.java' \
+            --output "$target"
+          grep -q 'class StrictHttpProbe' "$target"
+          grep -q 'generate_204' "$target"
+
+      - name: Run strict captive-portal simulation matrix
+        run: ./gradlew --no-daemon testDebugUnitTest --tests 'net.i2p.android.router.util.StrictCaptivePortalProbeTest'
+
+      - name: Upload unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captive-portal-test-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+          if-no-files-found: warn
