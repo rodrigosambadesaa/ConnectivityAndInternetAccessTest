@@ -6,6 +6,9 @@ import static org.junit.Assert.assertTrue;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.Config;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -20,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 28)
 public class StrictCaptivePortalProbeTest {
     private MiniHttpServer server;
     private String baseUrl;
