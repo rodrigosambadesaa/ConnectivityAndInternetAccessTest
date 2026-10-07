@@ -46,11 +46,17 @@ public class PassiveNetworkAndVpnTest {
 
     @After
     public void tearDown() {
+        /*
+         * Restore a genuinely usable network first. Calling isConnected() on that
+         * state exercises the production cleanup path that clears queued explicit
+         * connection attempts. Do not loop on isConnectedOrConnecting(): a connected
+         * VPN with no usable underlying network is intentionally "connecting-like"
+         * to the legacy NetworkInfo path while isConnected() correctly rejects it,
+         * which would make such a cleanup loop non-terminating.
+         */
+        setActiveWifi(true, true, false);
+        assertTrue(ConnectivityAndInternetAccess.isConnected(context));
         ConnectivityAndInternetAccess.clearConnectionAttemptStall();
-        while (ConnectivityAndInternetAccess.isConnectedOrConnecting(context)
-                && !ConnectivityAndInternetAccess.isConnected(context)) {
-            ConnectivityAndInternetAccess.endConnectionAttempt();
-        }
     }
 
     @Test
@@ -180,6 +186,18 @@ public class PassiveNetworkAndVpnTest {
     }
 
     @Test
+    @Config(sdk = 24)
+    public void api24ObserverWaitsForCapabilitiesAfterOnAvailable() {
+        assertObserverDoesNotPromoteOnAvailableAlone(2401);
+    }
+
+    @Test
+    @Config(sdk = 25)
+    public void api25ObserverWaitsForCapabilitiesAfterOnAvailable() {
+        assertObserverDoesNotPromoteOnAvailableAlone(2501);
+    }
+
+    @Test
     public void explicitConnectionAttemptBecomesStalledAfterThirtySecondsOffline() {
         shadow.setActiveNetworkInfo(null);
 
@@ -203,6 +221,42 @@ public class PassiveNetworkAndVpnTest {
         assertTrue(ConnectivityAndInternetAccess.isConnected(context));
         assertFalse(ConnectivityAndInternetAccess.isConnecting(context));
         assertFalse(ConnectivityAndInternetAccess.isConnectionAttemptStalled(context));
+    }
+
+    private void assertObserverDoesNotPromoteOnAvailableAlone(int netId) {
+        shadow.setActiveNetworkInfo(null);
+
+        ConnectivityAndInternetAccess.NetworkObserver observer =
+                ConnectivityAndInternetAccess.observeNetwork(context, state -> {});
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertFalse(observer.getLatestState().isConnected());
+
+        ConnectivityManager.NetworkCallback callback =
+                shadow.getNetworkCallbacks().iterator().next();
+        Network candidate = ShadowNetwork.newInstance(netId);
+
+        callback.onAvailable(candidate);
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertFalse(
+                "onAvailable alone must not be interpreted as validated/usable connectivity",
+                observer.getLatestState().isConnected());
+
+        callback.onCapabilitiesChanged(candidate, capabilities(
+                NetworkCapabilities.TRANSPORT_WIFI,
+                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertTrue(observer.getLatestState().isConnected());
+        assertTrue(observer.getLatestState().isInternetValidated());
+
+        callback.onLost(candidate);
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertFalse(observer.getLatestState().isConnected());
+
+        observer.close();
+        assertTrue(shadow.getNetworkCallbacks().isEmpty());
     }
 
     private void setActiveWifi(boolean validated, boolean notSuspended, boolean captivePortal) {
