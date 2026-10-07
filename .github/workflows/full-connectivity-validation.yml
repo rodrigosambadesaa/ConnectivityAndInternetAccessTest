@@ -318,7 +318,5 @@ jobs:
             ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            adb shell am instrument -w -r \
-              -e class com.example.connectivityandinternetaccesstest.ConnectivityApi24InstrumentedTest \
-              com.example.connectivityandinternetaccesstest.test/androidx.test.runner.AndroidJUnitRunner
+            adb shell am instrument -w -r -e class com.example.connectivityandinternetaccesstest.ConnectivityApi24InstrumentedTest com.example.connectivityandinternetaccesstest.test/androidx.test.runner.AndroidJUnitRunner
 
