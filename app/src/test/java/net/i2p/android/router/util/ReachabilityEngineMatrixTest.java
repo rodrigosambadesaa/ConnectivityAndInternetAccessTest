@@ -20,6 +20,7 @@ import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowConnectivityManager;
 import org.robolectric.shadows.ShadowNetworkInfo;
+import org.robolectric.shadows.ShadowNetworkCapabilities;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -51,12 +52,13 @@ public class ReachabilityEngineMatrixTest {
         shadow.setActiveNetworkInfo(wifi);
 
         Network active = cm.getActiveNetwork();
-        NetworkCapabilities capabilities = new NetworkCapabilities()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        NetworkCapabilities capabilities = ShadowNetworkCapabilities.newInstance();
+        ShadowNetworkCapabilities shadowCapabilities = Shadows.shadowOf(capabilities);
+        shadowCapabilities.addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
+        shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+        shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+        shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
         shadow.setNetworkCapabilities(active, capabilities);
     }
 
