@@ -22,6 +22,7 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowConnectivityManager;
 import org.robolectric.shadows.ShadowNetwork;
 import org.robolectric.shadows.ShadowNetworkInfo;
+import org.robolectric.shadows.ShadowNetworkCapabilities;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -93,10 +94,10 @@ public class PassiveNetworkAndVpnTest {
                 true);
         shadow.setActiveNetworkInfo(vpnInfo);
         Network vpn = cm.getActiveNetwork();
-        shadow.setNetworkCapabilities(vpn, new NetworkCapabilities()
-                .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED));
+        shadow.setNetworkCapabilities(vpn, capabilities(
+                NetworkCapabilities.TRANSPORT_VPN,
+                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED));
 
         assertTrue(ConnectivityAndInternetAccess.vpnActive(context));
         assertFalse(ConnectivityAndInternetAccess.hasUnderlyingNetwork(context));
@@ -113,11 +114,11 @@ public class PassiveNetworkAndVpnTest {
                 true);
         shadow.setActiveNetworkInfo(vpnInfo);
         Network vpn = cm.getActiveNetwork();
-        shadow.setNetworkCapabilities(vpn, new NetworkCapabilities()
-                .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        shadow.setNetworkCapabilities(vpn, capabilities(
+                NetworkCapabilities.TRANSPORT_VPN,
+                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED,
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED));
 
         Network underlying = ShadowNetwork.newInstance(101);
         NetworkInfo wifiInfo = ShadowNetworkInfo.newInstance(
@@ -127,11 +128,11 @@ public class PassiveNetworkAndVpnTest {
                 true,
                 true);
         shadow.addNetwork(underlying, wifiInfo);
-        shadow.setNetworkCapabilities(underlying, new NetworkCapabilities()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN));
+        shadow.setNetworkCapabilities(underlying, capabilities(
+                NetworkCapabilities.TRANSPORT_WIFI,
+                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED,
+                NetworkCapabilities.NET_CAPABILITY_NOT_VPN));
 
         assertTrue(ConnectivityAndInternetAccess.hasUnderlyingNetwork(context));
         assertTrue(ConnectivityAndInternetAccess.isConnected(context));
@@ -153,12 +154,12 @@ public class PassiveNetworkAndVpnTest {
                 shadow.getNetworkCallbacks().iterator().next();
         Network active = cm.getActiveNetwork();
 
-        NetworkCapabilities captive = new NetworkCapabilities()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+        NetworkCapabilities captive = capabilities(
+                NetworkCapabilities.TRANSPORT_WIFI,
+                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED,
+                NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
 
         callback.onCapabilitiesChanged(active, captive);
         Shadows.shadowOf(Looper.getMainLooper()).idle();
@@ -214,20 +215,31 @@ public class PassiveNetworkAndVpnTest {
         shadow.setActiveNetworkInfo(wifi);
         Network active = cm.getActiveNetwork();
 
-        NetworkCapabilities capabilities = new NetworkCapabilities()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+        NetworkCapabilities capabilities = capabilities(
+                NetworkCapabilities.TRANSPORT_WIFI,
+                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+        ShadowNetworkCapabilities shadowCapabilities = Shadows.shadowOf(capabilities);
 
         if (notSuspended) {
-            capabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+            shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
         }
         if (validated) {
-            capabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
         }
         if (captivePortal) {
-            capabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+            shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
         }
         shadow.setNetworkCapabilities(active, capabilities);
+    }
+
+    private static NetworkCapabilities capabilities(int transport, int... capabilityValues) {
+        NetworkCapabilities capabilities = ShadowNetworkCapabilities.newInstance();
+        ShadowNetworkCapabilities shadowCapabilities = Shadows.shadowOf(capabilities);
+        shadowCapabilities.addTransportType(transport);
+        for (int capability : capabilityValues) {
+            shadowCapabilities.addCapability(capability);
+        }
+        return capabilities;
     }
 }
