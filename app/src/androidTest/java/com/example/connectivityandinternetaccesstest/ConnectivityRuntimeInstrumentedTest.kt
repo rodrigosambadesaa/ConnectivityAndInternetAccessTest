@@ -67,20 +67,21 @@ class ConnectivityRuntimeInstrumentedTest {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = cm.activeNetwork
         assumeTrue("No active network", network != null)
+        val activeNetwork = network ?: return
 
-        val caps = cm.getNetworkCapabilities(network)
+        val caps = cm.getNetworkCapabilities(activeNetwork)
         assumeTrue(
             "Network must advertise INTERNET before attempting IPv6-only diagnostic",
             caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         )
 
         val probe = ConnectivityAndInternetAccess.DefaultTcpProbe()
-        val reachable = probe.checkTcp("2606:4700:4700::1111", 53, network)
+        val reachable = probe.checkTcp("2606:4700:4700::1111", 53, activeNetwork)
         Log.i(TAG, "IPV6_ONLY cloudflareDnsTcp53=$reachable")
 
         if (!reachable) {
             val addresses = try {
-                network.getAllByName("cloudflare.com").toList()
+                activeNetwork.getAllByName("cloudflare.com").toList()
             } catch (_: Exception) {
                 emptyList()
             }
