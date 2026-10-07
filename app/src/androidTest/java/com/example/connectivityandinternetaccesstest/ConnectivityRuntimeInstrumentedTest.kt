@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -63,6 +64,37 @@ class ConnectivityRuntimeInstrumentedTest {
     }
 
     @Test
+    fun globalDeadlineBoundsHangingStrategiesOnRealAndroid() {
+        val connectivity = ConnectivityAndInternetAccess.Builder()
+            .setHosts(listOf("https://slow.invalid/"))
+            .setDnsResolvers(listOf("slow-dns.test"))
+            .setTcpTargets(listOf("slow-tcp.test:443"))
+            .setNtpTargets(listOf("slow-ntp.test"))
+            .setTlsTargets(listOf("slow-tls.test:443"))
+            .setDnsProbeStrategy { _, _ -> sleepAndFail(20_000L) }
+            .setTcpProbeStrategy { _, _, _ -> sleepAndFail(20_000L) }
+            .setNtpProbeStrategy { _, _ -> sleepAndFail(20_000L) }
+            .setHttpProbeStrategy { _, _ -> sleepAndFail(20_000L) }
+            .setTlsProbeStrategy { _, _, _ -> sleepAndFail(20_000L) }
+            .build()
+
+        val started = android.os.SystemClock.elapsedRealtime()
+        val result = connectivity.checkInternetBlocking(context)
+        val elapsed = android.os.SystemClock.elapsedRealtime() - started
+
+        Log.i(
+            TAG,
+            "DEADLINE reachable=${result.isReachable} elapsedMs=$elapsed " +
+                "reportedMs=${result.elapsedMilliseconds} attempted=${result.attemptedHosts}"
+        )
+        assertFalse(result.isReachable)
+        assertTrue(
+            "Real Android global deadline should bound hanging probes; elapsed=$elapsed",
+            elapsed < 8_500L
+        )
+    }
+
+    @Test
     fun ipv6OnlyProbeRunsWhenEmulatorActuallyHasIpv6InternetCapability() {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = cm.activeNetwork
@@ -88,6 +120,15 @@ class ConnectivityRuntimeInstrumentedTest {
             reachable
         )
         assertTrue("IPv6-only TCP target is reachable when an IPv6 route exists", reachable)
+    }
+
+    private fun sleepAndFail(millis: Long): Boolean {
+        try {
+            Thread.sleep(millis)
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        return false
     }
 
     companion object {
