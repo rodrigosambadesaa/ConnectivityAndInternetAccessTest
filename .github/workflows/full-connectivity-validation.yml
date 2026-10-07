@@ -103,6 +103,7 @@ jobs:
             -noprompt
           keytool -exportcert -alias localhost -keystore "$GITHUB_WORKSPACE/.ci/test-tls.p12" -storepass changeit -rfc -file "$GITHUB_WORKSPACE/.ci/localhost.crt"
           cp "$JAVA_HOME/lib/security/cacerts" "$GITHUB_WORKSPACE/.ci/test-truststore.jks"
+          chmod u+w "$GITHUB_WORKSPACE/.ci/test-truststore.jks"
           keytool -importcert -alias connectivity-ci-localhost -file "$GITHUB_WORKSPACE/.ci/localhost.crt" -keystore "$GITHUB_WORKSPACE/.ci/test-truststore.jks" -storepass changeit -noprompt
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
 
