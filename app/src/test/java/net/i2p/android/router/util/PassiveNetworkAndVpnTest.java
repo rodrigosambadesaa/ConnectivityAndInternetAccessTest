@@ -9,6 +9,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.os.Build;
 import android.os.Looper;
 
 import org.junit.After;
@@ -92,6 +93,7 @@ public class PassiveNetworkAndVpnTest {
 
     @Test
     public void vpnWithoutUsableUnderlyingNetworkIsRejected() {
+        shadow.clearAllNetworks();
         NetworkInfo vpnInfo = ShadowNetworkInfo.newInstance(
                 NetworkInfo.DetailedState.CONNECTED,
                 ConnectivityManager.TYPE_VPN,
@@ -112,6 +114,7 @@ public class PassiveNetworkAndVpnTest {
 
     @Test
     public void vpnWithUsableNonVpnUnderlyingNetworkIsAccepted() {
+        shadow.clearAllNetworks();
         NetworkInfo vpnInfo = ShadowNetworkInfo.newInstance(
                 NetworkInfo.DetailedState.CONNECTED,
                 ConnectivityManager.TYPE_VPN,
@@ -275,7 +278,7 @@ public class PassiveNetworkAndVpnTest {
                 NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
         ShadowNetworkCapabilities shadowCapabilities = Shadows.shadowOf(capabilities);
 
-        if (notSuspended) {
+        if (notSuspended && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             shadowCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
         }
         if (validated) {
