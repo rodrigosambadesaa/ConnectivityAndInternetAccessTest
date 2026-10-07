@@ -223,10 +223,7 @@ jobs:
           script: |
             chmod +x gradlew
             adb shell getprop ro.build.version.sdk
-            ./gradlew --no-daemon connectedDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest \
-              -Pandroid.testInstrumentationRunnerArguments.profile=api-${{ matrix.api-level }} \
-              -Pandroid.testInstrumentationRunnerArguments.iterations=5
+            ./gradlew --no-daemon connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest -Pandroid.testInstrumentationRunnerArguments.profile=api-${{ matrix.api-level }} -Pandroid.testInstrumentationRunnerArguments.iterations=5
 
       - name: Upload instrumentation reports
         if: always()
