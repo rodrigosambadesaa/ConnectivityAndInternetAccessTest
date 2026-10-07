@@ -1,0 +1,333 @@
+name: Full connectivity validation
+
+on:
+  push:
+    branches:
+      - master
+      - ci/full-connectivity-validation
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GIST_RAW_JAVA: https://gist.githubusercontent.com/rodrigosambadesaa/729cca29a031fef4e2f15751863b655f/raw/ConnectivityAndInternetAccess.java
+  APP_JAVA: app/src/main/java/com/example/connectivityandinternetaccesstest/ConnectivityAndInternetAccess.java
+  TEST_JAVA: app/src/test/java/net/i2p/android/router/util/ConnectivityAndInternetAccess.java
+
+jobs:
+  unit-and-sync:
+    name: Unit tests + Gist sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Download the current Gist implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$TEST_JAVA")"
+          curl --fail --location --retry 4 --retry-all-errors "$GIST_RAW_JAVA" --output "$TEST_JAVA"
+          grep -q 'package net.i2p.android.router.util;' "$TEST_JAVA"
+          grep -q 'class DefaultDnsProbe' "$TEST_JAVA"
+          grep -q 'class DefaultTcpProbe' "$TEST_JAVA"
+          grep -q 'class DefaultNtpProbe' "$TEST_JAVA"
+          grep -q 'class DefaultTlsProbe' "$TEST_JAVA"
+          grep -q 'strictCaptivePortalBuilder' "$TEST_JAVA"
+
+      - name: Verify repository copy matches the current Gist
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          gist = Path("app/src/test/java/net/i2p/android/router/util/ConnectivityAndInternetAccess.java").read_text()
+          normalized = gist.replace(
+              "package net.i2p.android.router.util;",
+              "package com.example.connectivityandinternetaccesstest;",
+              1,
+          )
+          Path("/tmp/ConnectivityAndInternetAccess.normalized.java").write_text(normalized)
+          PY
+
+          if cmp -s "$APP_JAVA" /tmp/ConnectivityAndInternetAccess.normalized.java; then
+            echo "in_sync=true" >> "$GITHUB_OUTPUT"
+            echo "Repository copy is byte-for-byte synchronized after package normalization."
+          else
+            echo "in_sync=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Repository copy differs from the current Gist."
+            diff -u "$APP_JAVA" /tmp/ConnectivityAndInternetAccess.normalized.java || true
+          fi
+
+          # All validation below intentionally runs against the current Gist even
+          # when the checked-in app copy is stale.
+          cp /tmp/ConnectivityAndInternetAccess.normalized.java "$APP_JAVA"
+
+      - name: Create CI-only Firebase config
+        shell: bash
+        run: |
+          cat > app/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "123456789012",
+              "project_id": "connectivity-ci-placeholder",
+              "storage_bucket": "connectivity-ci-placeholder.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:123456789012:android:0123456789abcdef",
+                "android_client_info": {
+                  "package_name": "com.example.connectivityandinternetaccesstest"
+                }
+              },
+              "api_key": [{"current_key": "AIzaSyCIPlaceholderNotARealCredential000000"}],
+              "services": {"appinvite_service": {"other_platform_oauth_client": []}}
+            }],
+            "configuration_version": "1"
+          }
+          JSON
+
+      - name: Start local NTP responder on UDP/123
+        shell: bash
+        run: |
+          sudo python3 - <<'PY' >/tmp/ntp-ci.log 2>&1 &
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          s.bind(("127.0.0.1", 123))
+          while True:
+              data, addr = s.recvfrom(1024)
+              if len(data) >= 48:
+                  reply = bytearray(48)
+                  reply[0] = 0x1c
+                  s.sendto(reply, addr)
+          PY
+          sleep 1
+
+      - name: Build and run deterministic JVM/Robolectric suite
+        env:
+          CONNECTIVITY_CI_NTP: '1'
+          CONNECTIVITY_CI_LIVE: '1'
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon clean assembleDebug testDebugUnitTest
+
+      - name: Upload reports and normalized current Gist
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-unit-validation
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+            /tmp/ConnectivityAndInternetAccess.normalized.java
+          if-no-files-found: warn
+
+      - name: Enforce repository/Gist synchronization
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.sync.outputs.in_sync }}" != "true" ]]; then
+            echo "The checked-in app copy must be updated from the current Gist."
+            exit 1
+          fi
+
+  emulator-api-matrix:
+    name: Emulator API ${{ matrix.api-level }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [24, 28, 35]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Sync app source to current Gist for runtime validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 4 --retry-all-errors "$GIST_RAW_JAVA" --output /tmp/gist.java
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("/tmp/gist.java")
+          text = p.read_text().replace(
+              "package net.i2p.android.router.util;",
+              "package com.example.connectivityandinternetaccesstest;",
+              1,
+          )
+          Path("app/src/main/java/com/example/connectivityandinternetaccesstest/ConnectivityAndInternetAccess.java").write_text(text)
+          PY
+
+      - name: Create CI-only Firebase config
+        shell: bash
+        run: |
+          cat > app/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "123456789012",
+              "project_id": "connectivity-ci-placeholder",
+              "storage_bucket": "connectivity-ci-placeholder.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:123456789012:android:0123456789abcdef",
+                "android_client_info": {
+                  "package_name": "com.example.connectivityandinternetaccesstest"
+                }
+              },
+              "api_key": [{"current_key": "AIzaSyCIPlaceholderNotARealCredential000000"}],
+              "services": {"appinvite_service": {"other_platform_oauth_client": []}}
+            }],
+            "configuration_version": "1"
+          }
+          JSON
+
+      - name: Enable KVM group access
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Run runtime connectivity suite
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            chmod +x gradlew
+            adb shell getprop ro.build.version.sdk
+            ./gradlew --no-daemon connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest -Pandroid.testInstrumentationRunnerArguments.profile=api-${{ matrix.api-level }} -Pandroid.testInstrumentationRunnerArguments.iterations=5
+
+      - name: Upload instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-api-${{ matrix.api-level }}-reports
+          path: |
+            app/build/reports/androidTests/connected/
+            app/build/outputs/androidTest-results/connected/
+          if-no-files-found: warn
+
+  degraded-network-matrix:
+    name: Emulator degraded 2G/3G matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Sync app source to current Gist for runtime validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 4 --retry-all-errors "$GIST_RAW_JAVA" --output /tmp/gist.java
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("/tmp/gist.java").read_text().replace(
+              "package net.i2p.android.router.util;",
+              "package com.example.connectivityandinternetaccesstest;",
+              1,
+          )
+          Path("app/src/main/java/com/example/connectivityandinternetaccesstest/ConnectivityAndInternetAccess.java").write_text(text)
+          PY
+
+      - name: Create CI-only Firebase config
+        shell: bash
+        run: |
+          cat > app/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "123456789012",
+              "project_id": "connectivity-ci-placeholder",
+              "storage_bucket": "connectivity-ci-placeholder.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:123456789012:android:0123456789abcdef",
+                "android_client_info": {
+                  "package_name": "com.example.connectivityandinternetaccesstest"
+                }
+              },
+              "api_key": [{"current_key": "AIzaSyCIPlaceholderNotARealCredential000000"}],
+              "services": {"appinvite_service": {"other_platform_oauth_client": []}}
+            }],
+            "configuration_version": "1"
+          }
+          JSON
+
+      - name: Enable KVM group access
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"'             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Run full/EDGE/GPRS/UMTS repeated diagnostics
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 28
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            chmod +x gradlew
+            adb emu network speed full
+            adb emu network delay none
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=full -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed edge
+            adb emu network delay edge
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=edge -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed gprs
+            adb emu network delay gprs
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=gprs -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed umts
+            adb emu network delay umts
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=umts -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed full
+            adb emu network delay none
+
+      - name: Upload degraded-network reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: degraded-network-reports
+          path: |
+            app/build/reports/androidTests/connected/
+            app/build/outputs/androidTest-results/connected/
+          if-no-files-found: warn
