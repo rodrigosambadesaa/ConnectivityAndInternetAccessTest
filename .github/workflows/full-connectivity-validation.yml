@@ -309,26 +309,19 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
-            set -e
             chmod +x gradlew
-            run_profile() {
-              profile="$1"
-              speed="$2"
-              delay="$3"
-              echo "=== profile=$profile speed=$speed delay=$delay ==="
-              adb emu network speed "$speed"
-              adb emu network delay "$delay"
-              ./gradlew --no-daemon connectedDebugAndroidTest \
-                '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' \
-                -Pandroid.testInstrumentationRunnerArguments.profile="$profile" \
-                -Pandroid.testInstrumentationRunnerArguments.iterations=7
-            }
-
-            run_profile full full none
-            run_profile edge edge edge
-            run_profile gprs gprs gprs
-            run_profile umts umts umts
-
+            adb emu network speed full
+            adb emu network delay none
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=full -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed edge
+            adb emu network delay edge
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=edge -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed gprs
+            adb emu network delay gprs
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=gprs -Pandroid.testInstrumentationRunnerArguments.iterations=7
+            adb emu network speed umts
+            adb emu network delay umts
+            ./gradlew --no-daemon connectedDebugAndroidTest '-Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest#repeatedDefaultDiagnosticKeepsFalseNegativeRateLow' -Pandroid.testInstrumentationRunnerArguments.profile=umts -Pandroid.testInstrumentationRunnerArguments.iterations=7
             adb emu network speed full
             adb emu network delay none
 
