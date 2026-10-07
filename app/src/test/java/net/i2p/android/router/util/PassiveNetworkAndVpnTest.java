@@ -102,10 +102,13 @@ public class PassiveNetworkAndVpnTest {
                 true);
         shadow.setActiveNetworkInfo(vpnInfo);
         Network vpn = cm.getActiveNetwork();
-        shadow.setNetworkCapabilities(vpn, capabilities(
+        NetworkCapabilities vpnCapabilities = capabilities(
                 NetworkCapabilities.TRANSPORT_VPN,
                 NetworkCapabilities.NET_CAPABILITY_INTERNET,
-                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED));
+                NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+        Shadows.shadowOf(vpnCapabilities)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+        shadow.setNetworkCapabilities(vpn, vpnCapabilities);
 
         assertTrue(ConnectivityAndInternetAccess.vpnActive(context));
         assertFalse(ConnectivityAndInternetAccess.hasUnderlyingNetwork(context));
@@ -123,11 +126,14 @@ public class PassiveNetworkAndVpnTest {
                 true);
         shadow.setActiveNetworkInfo(vpnInfo);
         Network vpn = cm.getActiveNetwork();
-        shadow.setNetworkCapabilities(vpn, capabilities(
+        NetworkCapabilities vpnCapabilities = capabilities(
                 NetworkCapabilities.TRANSPORT_VPN,
                 NetworkCapabilities.NET_CAPABILITY_INTERNET,
                 NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED,
-                NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        Shadows.shadowOf(vpnCapabilities)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+        shadow.setNetworkCapabilities(vpn, vpnCapabilities);
 
         Network underlying = ShadowNetwork.newInstance(101);
         NetworkInfo wifiInfo = ShadowNetworkInfo.newInstance(
