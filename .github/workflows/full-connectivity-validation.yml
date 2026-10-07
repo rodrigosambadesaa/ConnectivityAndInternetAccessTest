@@ -242,7 +242,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             chmod +x gradlew
             ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
             adb install -r app/build/outputs/apk/debug/app-debug.apk
