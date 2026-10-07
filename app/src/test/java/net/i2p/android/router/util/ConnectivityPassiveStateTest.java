@@ -148,9 +148,9 @@ public class ConnectivityPassiveStateTest {
     @Config(sdk = 28)
     public void vpnWithUsableUnderlyingWifiIsAccepted() {
         NetworkInfo vpnInfo = networkInfo(ConnectivityManager.TYPE_VPN);
-        Network vpn = ShadowNetwork.newInstance(206);
-        shadowManager.addNetwork(vpn, vpnInfo);
         shadowManager.setActiveNetworkInfo(vpnInfo);
+        Network vpn = manager.getActiveNetwork();
+        assertTrue(vpn != null);
         shadowManager.setNetworkCapabilities(vpn, capabilities(
                 NetworkCapabilities.TRANSPORT_VPN,
                 true,
@@ -275,9 +275,9 @@ public class ConnectivityPassiveStateTest {
             boolean notSuspended,
             boolean notVpn) {
         NetworkInfo info = networkInfo(legacyType);
-        Network network = ShadowNetwork.newInstance(netId);
-        shadowManager.addNetwork(network, info);
         shadowManager.setActiveNetworkInfo(info);
+        Network network = manager.getActiveNetwork();
+        assertTrue(network != null);
         shadowManager.setNetworkCapabilities(network, capabilities(
                 transport,
                 internet,
@@ -312,20 +312,24 @@ public class ConnectivityPassiveStateTest {
         } else {
             shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         }
-        if (validated) {
-            shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-        } else {
-            shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            if (validated) {
+                shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            } else {
+                shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            }
+            if (captivePortal) {
+                shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+            } else {
+                shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
+            }
         }
-        if (captivePortal) {
-            shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
-        } else {
-            shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL);
-        }
-        if (notSuspended) {
-            shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
-        } else {
-            shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            if (notSuspended) {
+                shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+            } else {
+                shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+            }
         }
         if (notVpn) {
             shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
