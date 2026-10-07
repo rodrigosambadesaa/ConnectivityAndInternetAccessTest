@@ -69,8 +69,8 @@ public class ConnectivityPassiveStateTest {
         assertTrue(state.isInternetValidated());
         assertFalse(state.isCaptivePortalDetected());
         assertTrue(ConnectivityAndInternetAccess.isConnected(context, network));
-        assertTrue(ConnectivityAndInternetAccess.isWifiConnected(context));
-        assertFalse(ConnectivityAndInternetAccess.isVpnActive(context));
+        assertTrue(ConnectivityAndInternetAccess.isConnectedWifi(context));
+        assertFalse(ConnectivityAndInternetAccess.vpnActive(context));
     }
 
     @Test
@@ -139,7 +139,7 @@ public class ConnectivityPassiveStateTest {
                 true,
                 false);
 
-        assertTrue(ConnectivityAndInternetAccess.isVpnActive(context));
+        assertTrue(ConnectivityAndInternetAccess.vpnActive(context));
         assertFalse(ConnectivityAndInternetAccess.hasUnderlyingNetwork(context));
         assertFalse(ConnectivityAndInternetAccess.isConnected(context));
     }
@@ -170,7 +170,7 @@ public class ConnectivityPassiveStateTest {
                 true,
                 true));
 
-        assertTrue(ConnectivityAndInternetAccess.isVpnActive(context));
+        assertTrue(ConnectivityAndInternetAccess.vpnActive(context));
         assertTrue(ConnectivityAndInternetAccess.hasUnderlyingNetwork(context));
         assertTrue(ConnectivityAndInternetAccess.isConnected(context));
     }
