@@ -108,7 +108,7 @@ class ConnectivityRuntimeMatrixTest {
         Log.i(
             TAG,
             "telemetry dnsUdp53=$dns ntpUdp123=$ntp ipv6Tcp53=$ipv6 " +
-                "icmpReachable=${icmp.isReachable} icmpTarget=${icmp.reachedHost}"
+                "icmpReachable=${icmp.isReachable} icmpTarget=${icmp.reachedAddress}"
         )
 
         // UDP/53, UDP/123, ICMP and IPv6 can legitimately be filtered by CI or upstream networks.
