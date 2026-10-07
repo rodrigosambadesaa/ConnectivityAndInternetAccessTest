@@ -6,6 +6,9 @@ import static org.junit.Assume.assumeNoException;
 import static org.junit.Assume.assumeTrue;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.Config;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;
@@ -28,6 +31,8 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLSocket;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 28)
 public class LocalProtocolProbeTest {
 
     @Test
