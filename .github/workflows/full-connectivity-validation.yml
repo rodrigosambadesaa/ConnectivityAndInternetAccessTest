@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: full-connectivity-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   source-sync-and-unit:
     name: Latest Gist sync + deterministic matrix
