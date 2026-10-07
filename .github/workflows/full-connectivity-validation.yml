@@ -221,6 +221,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
+            chmod +x gradlew
             adb shell getprop ro.build.version.sdk
             ./gradlew --no-daemon connectedDebugAndroidTest \
               -Pandroid.testInstrumentationRunnerArguments.class=com.example.connectivityandinternetaccesstest.ConnectivityRuntimeMatrixTest \
@@ -309,6 +310,7 @@ jobs:
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
             set -e
+            chmod +x gradlew
             run_profile() {
               profile="$1"
               speed="$2"
