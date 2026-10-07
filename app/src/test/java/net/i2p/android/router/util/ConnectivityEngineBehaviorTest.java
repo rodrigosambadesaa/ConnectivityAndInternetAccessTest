@@ -228,9 +228,9 @@ public class ConnectivityEngineBehaviorTest {
                 0,
                 true,
                 NetworkInfo.State.CONNECTED);
-        Network network = ShadowNetwork.newInstance(netId);
-        shadowManager.addNetwork(network, info);
         shadowManager.setActiveNetworkInfo(info);
+        Network network = manager.getActiveNetwork();
+        assertNotNull(network);
 
         NetworkCapabilities capabilities = ShadowNetworkCapabilities.newInstance();
         ShadowNetworkCapabilities shadowCapabilities = Shadow.extract(capabilities);
