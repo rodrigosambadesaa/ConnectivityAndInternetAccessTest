@@ -101,6 +101,19 @@ jobs:
             -storepass changeit \
             -keypass changeit \
             -noprompt
+          keytool -exportcert \\
+            -alias localhost \\
+            -keystore "$GITHUB_WORKSPACE/.ci/test-tls.p12" \\
+            -storepass changeit \\
+            -rfc \\
+            -file "$GITHUB_WORKSPACE/.ci/localhost.crt"
+          cp "$JAVA_HOME/lib/security/cacerts" "$GITHUB_WORKSPACE/.ci/test-truststore.jks"
+          keytool -importcert \\
+            -alias connectivity-ci-localhost \\
+            -file "$GITHUB_WORKSPACE/.ci/localhost.crt" \\
+            -keystore "$GITHUB_WORKSPACE/.ci/test-truststore.jks" \\
+            -storepass changeit \\
+            -noprompt
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
 
       - name: Run complete deterministic JVM/Robolectric matrix
@@ -108,7 +121,7 @@ jobs:
         env:
           TEST_TLS_KEYSTORE: ${{ github.workspace }}/.ci/test-tls.p12
           JAVA_TOOL_OPTIONS: >-
-            -Djavax.net.ssl.trustStore=${{ github.workspace }}/.ci/test-tls.p12
+            -Djavax.net.ssl.trustStore=${{ github.workspace }}/.ci/test-truststore.jks
             -Djavax.net.ssl.trustStorePassword=changeit
         run: |
           chmod +x gradlew
