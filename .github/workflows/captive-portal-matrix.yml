@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+# CVE-2026-114938: protect the JDK used for Gradle/Android SDK builds.
+env:
+  JAVA_TOOL_OPTIONS: -XX:-UseBASE64Intrinsics
+
 jobs:
   strict-captive-portal:
     runs-on: ubuntu-latest
