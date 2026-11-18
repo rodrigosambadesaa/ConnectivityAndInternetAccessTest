@@ -1,0 +1,47 @@
+name: Java4Shell JDK verification
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+# Android app runtime uses ART; these safeguards apply to Java build tooling.
+env:
+  JAVA_TOOL_OPTIONS: -XX:-UseBASE64Intrinsics
+
+jobs:
+  verify-build-jdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify Base64 intrinsic mitigation is active
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -XX:+PrintFlagsFinal -version 2>&1 | grep -E 'UseBASE64Intrinsics[[:space:]]+=[[:space:]]+false'
+      - name: Check all workflows using setup-java are guarded
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          checked = []
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              source = path.read_text()
+              if "setup-java@" not in source:
+                  continue
+              if "JAVA_TOOL_OPTIONS: -XX:-UseBASE64Intrinsics" not in source:
+                  raise SystemExit(f"Java4Shell protection is missing in {path}")
+              checked.append(str(path))
+          if not checked:
+              raise SystemExit("No JDK build workflow was checked")
+          print("Protected JDK workflows:", ", ".join(checked))
+          PY
