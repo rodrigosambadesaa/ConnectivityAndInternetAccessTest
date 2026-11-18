@@ -14,6 +14,7 @@ permissions:
   contents: read
 
 env:
+  JAVA_TOOL_OPTIONS: -XX:-UseBASE64Intrinsics
   GIST_RAW_JAVA: https://gist.githubusercontent.com/rodrigosambadesaa/729cca29a031fef4e2f15751863b655f/raw/ConnectivityAndInternetAccess.java
   APP_JAVA: app/src/main/java/com/example/connectivityandinternetaccesstest/ConnectivityAndInternetAccess.java
   TEST_JAVA: app/src/test/java/net/i2p/android/router/util/ConnectivityAndInternetAccess.java
